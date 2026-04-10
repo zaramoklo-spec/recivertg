@@ -170,6 +170,8 @@ class BotHandler:
             
             # اگر کاربر جدیده، ثبتش میکنیم
             existing_user = await self.db.get_user(user.id)
+            request_sent = False  # برای جلوگیری از اسپم
+            
             if not existing_user:
                 await self.db.add_user(User(
                     user_id=user.id,
@@ -180,8 +182,9 @@ class BotHandler:
                     is_approved=is_approved
                 ))
                 
-                # اگر کاربر عادیه، به سازنده اطلاع میدیم
+                # اگر کاربر عادیه، فقط یکبار به سازنده اطلاع میدیم
                 if not is_creator and not is_admin:
+                    request_sent = True
                     for creator_id in Config.ADMIN_IDS:
                         try:
                             await self.bot.send_message(
@@ -212,14 +215,23 @@ class BotHandler:
             
             await self.db.log_action('start', user.id)
             
-            # اگر کاربر عادی و تایید نشده، پیام محدودیت
+            # اگر کاربر عادی و تایید نشده، پیام محدودیت (فقط اگر درخواست فرستاده شده)
             if not is_creator and not is_admin and not is_approved:
-                await event.respond(
-                    "⏳ **در انتظار تایید**\n\n"
-                    "درخواست شما برای استفاده از ربات ارسال شد.\n\n"
-                    "لطفاً منتظر تایید سازنده باشید.\n\n"
-                    "پس از تایید، می‌توانید از ربات استفاده کنید."
-                )
+                if request_sent:
+                    # اولین بار که درخواست میده
+                    await event.respond(
+                        "⏳ **درخواست شما ارسال شد**\n\n"
+                        "درخواست شما برای استفاده از ربات به سازنده ارسال شد.\n\n"
+                        "لطفاً منتظر تایید باشید.\n\n"
+                        "پس از تایید، به شما اطلاع داده می‌شود."
+                    )
+                else:
+                    # دفعات بعدی که اسپم میکنه
+                    await event.respond(
+                        "⏳ **در انتظار تایید**\n\n"
+                        "درخواست شما قبلاً ارسال شده است.\n\n"
+                        "لطفاً صبور باشید و منتظر تایید سازنده بمانید."
+                    )
                 return
             
             # منوی اصلی
