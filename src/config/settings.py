@@ -9,13 +9,13 @@ load_dotenv()
 class Config:
     """کلاس تنظیمات"""
     
-    # تنظیمات API تلگرام (مقادیر پیش‌فرض)
-    API_ID: int = 5099517
-    API_HASH: str = "3bffbb2ff1f15e5812fbeb8ab22d0f66"
-    BOT_TOKEN: str = "5426399552:AAEedN-oqR090JOuyrPueeq3edz04-2ldjw"
+    # تنظیمات API تلگرام (از .env بخونید)
+    API_ID: int = int(os.getenv('API_ID', '0'))
+    API_HASH: str = os.getenv('API_HASH', '')
+    BOT_TOKEN: str = os.getenv('BOT_TOKEN', '')
     
-    # ادمین‌های ربات
-    ADMIN_IDS = [631388884]
+    # ادمین‌های ربات (از .env بخونید)
+    ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
     
     # تنظیمات تایمر و تاخیر (به ثانیه)
     DELAY_BETWEEN_ACTIONS = int(os.getenv('DELAY_BETWEEN_ACTIONS', '5'))  # تاخیر بین هر عملیات
