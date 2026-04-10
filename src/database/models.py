@@ -14,6 +14,7 @@ class User:
     last_name: Optional[str] = None
     created_at: Optional[str] = None
     is_admin: bool = False
+    is_approved: bool = False  # آیا سازنده بهش دسترسی داده
     referred_by: Optional[int] = None
     referral_count: int = 0
 
@@ -28,6 +29,7 @@ class Account:
     session_path: Optional[str] = None
     created_at: Optional[str] = None
     status: str = "active"  # active, inactive, banned
+    added_by: Optional[int] = None  # کسی که این اکانت رو اضافه کرده
 
 class Database:
     """کلاس مدیریت دیتابیس"""
@@ -49,6 +51,7 @@ class Database:
                     last_name TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     is_admin BOOLEAN DEFAULT 0,
+                    is_approved BOOLEAN DEFAULT 0,
                     referred_by INTEGER,
                     referral_count INTEGER DEFAULT 0,
                     FOREIGN KEY (referred_by) REFERENCES users (user_id)
@@ -66,7 +69,9 @@ class Database:
                     session_path TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     status TEXT DEFAULT 'active',
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                    added_by INTEGER,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id),
+                    FOREIGN KEY (added_by) REFERENCES users (user_id)
                 )
             """)
             
@@ -91,6 +96,20 @@ class Database:
             """)
             
             await db.commit()
+            
+            # Migration: اضافه کردن ستون added_by اگر وجود نداره
+            try:
+                await db.execute("ALTER TABLE accounts ADD COLUMN added_by INTEGER")
+                await db.commit()
+            except:
+                pass  # ستون از قبل وجود داره
+            
+            # Migration: اضافه کردن ستون is_approved اگر وجود نداره
+            try:
+                await db.execute("ALTER TABLE users ADD COLUMN is_approved BOOLEAN DEFAULT 0")
+                await db.commit()
+            except:
+                pass  # ستون از قبل وجود داره
     
     async def add_user(self, user: User) -> bool:
         """افزودن یا بروزرسانی کاربر"""
@@ -98,10 +117,10 @@ class Database:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute("""
                     INSERT OR REPLACE INTO users 
-                    (user_id, username, first_name, last_name, is_admin)
-                    VALUES (?, ?, ?, ?, ?)
+                    (user_id, username, first_name, last_name, is_admin, is_approved)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 """, (user.user_id, user.username, user.first_name, 
-                      user.last_name, user.is_admin))
+                      user.last_name, user.is_admin, user.is_approved))
                 await db.commit()
                 return True
         except Exception as e:
@@ -131,10 +150,10 @@ class Database:
             async with aiosqlite.connect(self.db_path) as db:
                 cursor = await db.execute("""
                     INSERT INTO accounts 
-                    (user_id, phone, telegram_user_id, telegram_username, session_path, status)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (user_id, phone, telegram_user_id, telegram_username, session_path, status, added_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (account.user_id, account.phone, account.telegram_user_id,
-                      account.telegram_username, account.session_path, account.status))
+                      account.telegram_username, account.session_path, account.status, account.added_by))
                 await db.commit()
                 return cursor.lastrowid
         except Exception as e:
@@ -253,6 +272,44 @@ class Database:
         except Exception as e:
             print(f"خطا در حذف ادمین: {e}")
             return False
+    
+    async def approve_user(self, user_id: int) -> bool:
+        """تایید دسترسی کاربر"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    "UPDATE users SET is_approved = 1 WHERE user_id = ?",
+                    (user_id,)
+                )
+                await db.commit()
+                return True
+        except Exception as e:
+            print(f"خطا در تایید کاربر: {e}")
+            return False
+    
+    async def unapprove_user(self, user_id: int) -> bool:
+        """لغو دسترسی کاربر"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    "UPDATE users SET is_approved = 0 WHERE user_id = ?",
+                    (user_id,)
+                )
+                await db.commit()
+                return True
+        except Exception as e:
+            print(f"خطا در لغو دسترسی کاربر: {e}")
+            return False
+    
+    async def get_pending_users(self) -> List[User]:
+        """دریافت کاربران در انتظار تایید"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM users WHERE is_approved = 0 AND is_admin = 0 ORDER BY created_at DESC"
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [User(**dict(row)) for row in rows]
     
     async def get_all_admins(self) -> List[User]:
         """دریافت لیست همه ادمین‌ها"""

@@ -160,19 +160,67 @@ class BotHandler:
             """هندلر دستور start"""
             # ثبت کاربر
             user = await event.get_sender()
-            await self.db.add_user(User(
-                user_id=user.id,
-                username=user.username,
-                first_name=user.first_name,
-                last_name=user.last_name,
-                is_admin=user.id in Config.ADMIN_IDS
-            ))
+            
+            # بررسی دسترسی
+            is_creator = user.id in Config.ADMIN_IDS
+            is_admin = await self.db.is_admin(user.id)
+            
+            # سازنده و ادمین‌ها خودکار approved هستن
+            is_approved = is_creator or is_admin
+            
+            # اگر کاربر جدیده، ثبتش میکنیم
+            existing_user = await self.db.get_user(user.id)
+            if not existing_user:
+                await self.db.add_user(User(
+                    user_id=user.id,
+                    username=user.username,
+                    first_name=user.first_name,
+                    last_name=user.last_name,
+                    is_admin=is_admin,
+                    is_approved=is_approved
+                ))
+                
+                # اگر کاربر عادیه، به سازنده اطلاع میدیم
+                if not is_creator and not is_admin:
+                    for creator_id in Config.ADMIN_IDS:
+                        try:
+                            await self.bot.send_message(
+                                creator_id,
+                                f"🔔 **کاربر جدید!**\n\n"
+                                f"👤 نام: {user.first_name or 'ندارد'}\n"
+                                f"🆔 یوزرنیم: @{user.username or 'ندارد'}\n"
+                                f"🔢 آیدی: `{user.id}`\n\n"
+                                f"برای تایید دسترسی: `/approve {user.id}`",
+                                buttons=[
+                                    [Button.inline("✅ تایید دسترسی", f"approve_{user.id}".encode())],
+                                    [Button.inline("❌ رد کردن", f"reject_{user.id}".encode())]
+                                ]
+                            )
+                        except:
+                            pass
+            else:
+                # بروزرسانی اطلاعات
+                is_approved = existing_user.is_approved or is_creator or is_admin
+                await self.db.add_user(User(
+                    user_id=user.id,
+                    username=user.username,
+                    first_name=user.first_name,
+                    last_name=user.last_name,
+                    is_admin=is_admin,
+                    is_approved=is_approved
+                ))
             
             await self.db.log_action('start', user.id)
             
-            # بررسی دسترسی کاربر
-            is_creator = user.id in Config.ADMIN_IDS
-            is_admin = await self.db.is_admin(user.id)
+            # اگر کاربر عادی و تایید نشده، پیام محدودیت
+            if not is_creator and not is_admin and not is_approved:
+                await event.respond(
+                    "⏳ **در انتظار تایید**\n\n"
+                    "درخواست شما برای استفاده از ربات ارسال شد.\n\n"
+                    "لطفاً منتظر تایید سازنده باشید.\n\n"
+                    "پس از تایید، می‌توانید از ربات استفاده کنید."
+                )
+                return
             
             # منوی اصلی
             if is_creator:
@@ -260,9 +308,22 @@ class BotHandler:
             
             # تعیین اینکه اکانت برای کی اضافه میشه
             user_id = event.sender_id
-            is_admin = user_id in Config.ADMIN_IDS or (await self.db.is_admin(user_id))
+            is_creator = user_id in Config.ADMIN_IDS
+            is_admin = await self.db.is_admin(user_id)
             
-            if is_admin:
+            # بررسی تایید کاربر
+            if not is_creator and not is_admin:
+                user = await self.db.get_user(user_id)
+                if not user or not user.is_approved:
+                    await event.edit(
+                        "⏳ **در انتظار تایید**\n\n"
+                        "شما هنوز تایید نشده‌اید.\n\n"
+                        "لطفاً منتظر تایید سازنده باشید.",
+                        buttons=Button.inline("🔙 بازگشت", b"back_to_menu")
+                    )
+                    return
+            
+            if is_creator or is_admin:
                 # ادمین‌ها برای خودشون اکانت اضافه می‌کنن
                 target_user_id = user_id
                 message = (
@@ -352,6 +413,7 @@ class BotHandler:
                 [Button.inline("📊 آمار کلی", b"admin_stats")],
                 [Button.inline("👥 لیست کاربران", b"admin_users")],
                 [Button.inline("📱 همه اکانت‌ها", b"admin_accounts")],
+                [Button.inline("⏳ کاربران در انتظار", b"admin_pending")],
                 [Button.inline("👑 مدیریت ادمین‌ها", b"admin_manage")],
                 [Button.inline("💾 بکاپ کامل", b"admin_backup")],
                 [Button.inline("📥 ریستور بکاپ", b"admin_restore")],
@@ -412,10 +474,19 @@ class BotHandler:
                 status_emoji = "✅" if acc.status == "active" else "❌"
                 text += f"{i}. {status_emoji} {acc.phone}\n"
                 text += f"   👤 @{acc.telegram_username or 'ندارد'}\n"
-                text += f"   🆔 User: {acc.user_id}\n\n"
+                text += f"   🆔 مالک: {acc.user_id}\n"
+                
+                # نمایش کسی که اضافه کرده
+                if acc.added_by:
+                    if acc.added_by == acc.user_id:
+                        text += f"   ➕ توسط خودش اضافه شده\n"
+                    else:
+                        text += f"   ➕ اضافه شده توسط: {acc.added_by}\n"
+                
+                text += "\n"
             
             if len(accounts) > 20:
-                text += f"\n... و {len(accounts) - 20} اکانت دیگر"
+                text += f"... و {len(accounts) - 20} اکانت دیگر"
             
             await event.edit(
                 text,
@@ -450,6 +521,204 @@ class BotHandler:
                 text,
                 buttons=Button.inline("🔙 بازگشت", b"admin_panel")
             )
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"admin_pending"))
+        async def admin_pending_callback(event):
+            """نمایش کاربران در انتظار تایید"""
+            # فقط سازنده دسترسی داره
+            if not await self._check_creator_access(event):
+                return
+            
+            await event.answer()
+            
+            # دریافت کاربران در انتظار
+            pending_users = await self.db.get_pending_users()
+            
+            if not pending_users:
+                await event.edit(
+                    "✅ **هیچ کاربری در انتظار تایید نیست!**",
+                    buttons=Button.inline("🔙 بازگشت", b"admin_panel")
+                )
+                return
+            
+            text = "⏳ **کاربران در انتظار تایید:**\n\n"
+            
+            for i, user in enumerate(pending_users[:10], 1):
+                text += f"{i}. 👤 {user.first_name or 'ندارد'}\n"
+                text += f"   🆔 یوزرنیم: @{user.username or 'ندارد'}\n"
+                text += f"   🔢 آیدی: `{user.user_id}`\n"
+                text += f"   📅 تاریخ: {user.created_at[:10] if user.created_at else 'نامشخص'}\n\n"
+            
+            if len(pending_users) > 10:
+                text += f"... و {len(pending_users) - 10} کاربر دیگر\n\n"
+            
+            text += "\n💡 **برای تایید:** `/approve USER_ID`\n"
+            text += "💡 **برای رد:** `/reject USER_ID`"
+            
+            await event.edit(
+                text,
+                buttons=Button.inline("🔙 بازگشت", b"admin_panel")
+            )
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"approve_"))
+        async def approve_callback(event):
+            """تایید دسترسی کاربر از طریق دکمه"""
+            # فقط سازنده دسترسی داره
+            if event.sender_id not in Config.ADMIN_IDS:
+                await event.answer("⛔️ شما دسترسی ندارید!", alert=True)
+                return
+            
+            # دریافت user_id از callback data
+            user_id = int(event.data.decode().split('_')[1])
+            
+            # تایید کاربر
+            success = await self.db.approve_user(user_id)
+            
+            if success:
+                await event.edit(
+                    f"✅ **کاربر تایید شد!**\n\n"
+                    f"🆔 آیدی: `{user_id}`\n\n"
+                    f"این کاربر حالا می‌تواند از ربات استفاده کند."
+                )
+                
+                # اطلاع به کاربر
+                try:
+                    await self.bot.send_message(
+                        user_id,
+                        "✅ **دسترسی شما تایید شد!**\n\n"
+                        "حالا می‌توانید از ربات استفاده کنید.\n\n"
+                        "برای شروع /start را ارسال کنید."
+                    )
+                except:
+                    pass
+                
+                await self.db.log_action('approve_user', event.sender_id, str(user_id))
+            else:
+                await event.answer("❌ خطا در تایید کاربر!", alert=True)
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"reject_"))
+        async def reject_callback(event):
+            """رد دسترسی کاربر از طریق دکمه"""
+            # فقط سازنده دسترسی داره
+            if event.sender_id not in Config.ADMIN_IDS:
+                await event.answer("⛔️ شما دسترسی ندارید!", alert=True)
+                return
+            
+            # دریافت user_id از callback data
+            user_id = int(event.data.decode().split('_')[1])
+            
+            await event.edit(
+                f"❌ **درخواست رد شد**\n\n"
+                f"🆔 آیدی: `{user_id}`\n\n"
+                f"این کاربر نمی‌تواند از ربات استفاده کند."
+            )
+            
+            # اطلاع به کاربر
+            try:
+                await self.bot.send_message(
+                    user_id,
+                    "❌ **درخواست شما رد شد**\n\n"
+                    "متأسفانه نمی‌توانید از این ربات استفاده کنید."
+                )
+            except:
+                pass
+            
+            await self.db.log_action('reject_user', event.sender_id, str(user_id))
+        
+        @self.bot.on(events.NewMessage(pattern='/approve'))
+        async def approve_command_handler(event):
+            """تایید دسترسی کاربر با دستور"""
+            # فقط سازنده می‌تونه تایید کنه
+            if event.sender_id not in Config.ADMIN_IDS:
+                await event.respond("⛔️ فقط سازنده می‌تواند کاربر تایید کند!")
+                return
+            
+            try:
+                # دریافت آیدی کاربر
+                parts = event.message.text.split()
+                if len(parts) < 2:
+                    await event.respond(
+                        "❌ فرمت نادرست!\n\n"
+                        "استفاده: `/approve USER_ID`\n"
+                        "مثال: `/approve 123456789`"
+                    )
+                    return
+                
+                user_id = int(parts[1])
+                
+                # تایید کاربر
+                success = await self.db.approve_user(user_id)
+                
+                if success:
+                    await event.respond(
+                        f"✅ **کاربر تایید شد!**\n\n"
+                        f"🆔 آیدی: `{user_id}`\n\n"
+                        f"این کاربر حالا می‌تواند از ربات استفاده کند."
+                    )
+                    
+                    # اطلاع به کاربر
+                    try:
+                        await self.bot.send_message(
+                            user_id,
+                            "✅ **دسترسی شما تایید شد!**\n\n"
+                            "حالا می‌توانید از ربات استفاده کنید.\n\n"
+                            "برای شروع /start را ارسال کنید."
+                        )
+                    except:
+                        pass
+                    
+                    await self.db.log_action('approve_user', event.sender_id, str(user_id))
+                else:
+                    await event.respond("❌ خطا در تایید کاربر!")
+                    
+            except ValueError:
+                await event.respond("❌ آیدی نامعتبر است! لطفاً یک عدد صحیح وارد کنید.")
+            except Exception as e:
+                await event.respond(f"❌ خطا: {str(e)}")
+        
+        @self.bot.on(events.NewMessage(pattern='/reject'))
+        async def reject_command_handler(event):
+            """رد دسترسی کاربر با دستور"""
+            # فقط سازنده می‌تونه رد کنه
+            if event.sender_id not in Config.ADMIN_IDS:
+                await event.respond("⛔️ فقط سازنده می‌تواند کاربر رد کند!")
+                return
+            
+            try:
+                # دریافت آیدی کاربر
+                parts = event.message.text.split()
+                if len(parts) < 2:
+                    await event.respond(
+                        "❌ فرمت نادرست!\n\n"
+                        "استفاده: `/reject USER_ID`\n"
+                        "مثال: `/reject 123456789`"
+                    )
+                    return
+                
+                user_id = int(parts[1])
+                
+                await event.respond(
+                    f"❌ **درخواست رد شد**\n\n"
+                    f"🆔 آیدی: `{user_id}`\n\n"
+                    f"این کاربر نمی‌تواند از ربات استفاده کند."
+                )
+                
+                # اطلاع به کاربر
+                try:
+                    await self.bot.send_message(
+                        user_id,
+                        "❌ **درخواست شما رد شد**\n\n"
+                        "متأسفانه نمی‌توانید از این ربات استفاده کنید."
+                    )
+                except:
+                    pass
+                
+                await self.db.log_action('reject_user', event.sender_id, str(user_id))
+                    
+            except ValueError:
+                await event.respond("❌ آیدی نامعتبر است! لطفاً یک عدد صحیح وارد کنید.")
+            except Exception as e:
+                await event.respond(f"❌ خطا: {str(e)}")
         
         @self.bot.on(events.NewMessage(pattern='/addadmin'))
         async def add_admin_handler(event):
@@ -1033,7 +1302,8 @@ class BotHandler:
                         telegram_user_id=result['user_id'],
                         telegram_username=result.get('username'),
                         session_path=result['session_path'],
-                        status='active'
+                        status='active',
+                        added_by=user_id  # کسی که اکانت رو اضافه کرده
                     )
                     await self.db.add_account(account)
                     await self.db.log_action('account_added', user_id, f"{state['phone']} -> user:{target_user_id}")
@@ -1123,7 +1393,8 @@ class BotHandler:
                         telegram_user_id=result['user_id'],
                         telegram_username=result.get('username'),
                         session_path=result['session_path'],
-                        status='active'
+                        status='active',
+                        added_by=user_id  # کسی که اکانت رو اضافه کرده
                     )
                     await self.db.add_account(account)
                     await self.db.log_action('account_added', user_id, f"{state.get('phone')} -> user:{target_user_id}")
