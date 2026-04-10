@@ -1,0 +1,109 @@
+# معماری پروژه
+
+## ساختار پوشه‌ها
+
+```
+telegram-account-receiver/
+│
+├── src/                          # کد اصلی برنامه
+│   ├── __init__.py
+│   │
+│   ├── config/                   # تنظیمات
+│   │   ├── __init__.py
+│   │   └── settings.py           # کلاس Config
+│   │
+│   ├── models/                   # مدل‌های داده
+│   │   ├── __init__.py
+│   │   └── account.py            # AccountCredentials, LoginResult
+│   │
+│   ├── core/                     # هسته اصلی
+│   │   ├── __init__.py
+│   │   └── exceptions.py         # استثناهای سفارشی
+│   │
+│   ├── services/                 # سرویس‌ها
+│   │   ├── __init__.py
+│   │   └── account_receiver.py   # AccountReceiver
+│   │
+│   ├── bot/                      # ربات تلگرام
+│   │   ├── __init__.py
+│   │   └── handlers.py           # BotHandler
+│   │
+│   └── utils/                    # ابزارهای کمکی
+│       ├── __init__.py
+│       ├── logger.py             # تنظیمات لاگ
+│       └── validators.py         # اعتبارسنجی
+│
+├── tests/                        # تست‌ها
+│   ├── __init__.py
+│   └── test_validators.py
+│
+├── docs/                         # مستندات
+│   ├── INSTALLATION.md
+│   ├── USAGE.md
+│   └── ARCHITECTURE.md
+│
+├── sessions/                     # سشن‌های ذخیره شده
+├── logs/                         # فایل‌های لاگ
+│
+├── main.py                       # نقطه ورود برنامه
+├── requirements.txt              # وابستگی‌ها
+├── .env.example                  # نمونه تنظیمات
+├── .gitignore
+└── README.md
+```
+
+## لایه‌های معماری
+
+### 1. Config Layer (لایه تنظیمات)
+- مدیریت تنظیمات از فایل `.env`
+- اعتبارسنجی تنظیمات
+- مسیرهای پوشه‌ها
+
+### 2. Models Layer (لایه مدل‌ها)
+- تعریف ساختار داده‌ها
+- اعتبارسنجی ورودی‌ها
+- Data Transfer Objects (DTO)
+
+### 3. Core Layer (لایه هسته)
+- استثناهای سفارشی
+- کلاس‌های پایه
+- ثوابت و تنظیمات مشترک
+
+### 4. Services Layer (لایه سرویس‌ها)
+- منطق اصلی برنامه
+- ارتباط با API تلگرام
+- مدیریت سشن‌ها
+
+### 5. Bot Layer (لایه ربات)
+- مدیریت تعاملات کاربر
+- هندلرهای دستورات
+- مدیریت وضعیت کاربران
+
+### 6. Utils Layer (لایه ابزارها)
+- توابع کمکی
+- لاگر
+- اعتبارسنجی
+
+## جریان داده
+
+```
+کاربر → ربات → BotHandler → AccountReceiver → Telethon API
+                                      ↓
+                                 ذخیره سشن
+```
+
+## الگوهای طراحی استفاده شده
+
+- **Singleton**: برای Config
+- **Service Layer**: برای جداسازی منطق
+- **DTO Pattern**: برای انتقال داده
+- **Exception Handling**: برای مدیریت خطاها
+
+## توسعه‌پذیری
+
+این معماری به راحتی قابل توسعه است:
+
+- اضافه کردن سرویس‌های جدید در `services/`
+- اضافه کردن مدل‌های جدید در `models/`
+- اضافه کردن هندلرهای جدید در `bot/`
+- اضافه کردن ابزارهای کمکی در `utils/`
