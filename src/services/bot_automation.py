@@ -2,6 +2,8 @@
 import logging
 import asyncio
 import random
+import string
+import re
 from typing import Optional, Dict, List
 from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
@@ -18,6 +20,64 @@ class BotAutomation:
         """مقداردهی اولیه"""
         self.api_id = api_id or Config.API_ID
         self.api_hash = api_hash or Config.API_HASH
+    
+    @staticmethod
+    def _generate_random_string(length: int) -> str:
+        """
+        تولید رشته تصادفی
+        
+        Args:
+            length: طول رشته
+            
+        Returns:
+            رشته تصادفی
+        """
+        # استفاده از حروف کوچک و اعداد
+        characters = string.ascii_lowercase + string.digits
+        return ''.join(random.choice(characters) for _ in range(length))
+    
+    @staticmethod
+    def _replace_variables(text: str) -> str:
+        """
+        جایگزینی متغیرهای دینامیک در متن
+        
+        متغیرهای پشتیبانی شده:
+        - {random:N} → رشته تصادفی N حرفی (حروف کوچک + اعداد)
+        - {random_upper:N} → رشته تصادفی N حرفی (حروف بزرگ + اعداد)
+        - {random_num:N} → عدد تصادفی N رقمی
+        
+        Args:
+            text: متن ورودی
+            
+        Returns:
+            متن با متغیرهای جایگزین شده
+        """
+        # جایگزینی {random:N}
+        pattern = r'\{random:(\d+)\}'
+        matches = re.findall(pattern, text)
+        for match in matches:
+            length = int(match)
+            random_str = BotAutomation._generate_random_string(length)
+            text = text.replace(f'{{random:{match}}}', random_str, 1)
+        
+        # جایگزینی {random_upper:N}
+        pattern = r'\{random_upper:(\d+)\}'
+        matches = re.findall(pattern, text)
+        for match in matches:
+            length = int(match)
+            characters = string.ascii_uppercase + string.digits
+            random_str = ''.join(random.choice(characters) for _ in range(length))
+            text = text.replace(f'{{random_upper:{match}}}', random_str, 1)
+        
+        # جایگزینی {random_num:N}
+        pattern = r'\{random_num:(\d+)\}'
+        matches = re.findall(pattern, text)
+        for match in matches:
+            length = int(match)
+            random_num = ''.join(random.choice(string.digits) for _ in range(length))
+            text = text.replace(f'{{random_num:{match}}}', random_num, 1)
+        
+        return text
     
     async def execute_scenario(self, session_path: str, bot_username: str, 
                                scenario: List[Dict]) -> Dict[str, any]:
@@ -75,6 +135,9 @@ class BotAutomation:
                 value = step.get('value', '')
                 delay = step.get('delay', 2)
                 
+                # جایگزینی متغیرهای دینامیک
+                value = self._replace_variables(value)
+                
                 logger.info(f"مرحله {step_num}: {action} - {value}")
                 
                 try:
@@ -95,24 +158,53 @@ class BotAutomation:
                         if messages and messages[0].buttons:
                             button_found = False
                             
-                            for row in messages[0].buttons:
-                                for button in row:
-                                    button_text = button.text if hasattr(button, 'text') else str(button)
-                                    
-                                    # جستجوی جزئی
-                                    clean_button = ''.join(c for c in button_text if c.isalnum() or c.isspace()).strip().lower()
-                                    clean_search = ''.join(c for c in value if c.isalnum() or c.isspace()).strip().lower()
-                                    
-                                    if clean_search in clean_button:
-                                        await button.click()
-                                        button_found = True
-                                        executed_steps.append(f"✅ کلیک دکمه: {button_text}")
-                                        break
-                                
-                                if button_found:
-                                    break
+                            # بررسی اینکه آیا value یک شماره است (با # یا بدون #)
+                            button_index = None
+                            if value.startswith('#'):
+                                # فرمت: #0, #1, #2
+                                try:
+                                    button_index = int(value[1:])
+                                except ValueError:
+                                    pass
+                            elif value.isdigit():
+                                # فرمت: 0, 1, 2
+                                button_index = int(value)
                             
-                            if not button_found:
+                            if button_index is not None:
+                                # کلیک با شماره دکمه
+                                all_buttons = []
+                                for row in messages[0].buttons:
+                                    for button in row:
+                                        all_buttons.append(button)
+                                
+                                if 0 <= button_index < len(all_buttons):
+                                    button = all_buttons[button_index]
+                                    button_text = button.text if hasattr(button, 'text') else str(button)
+                                    await button.click()
+                                    button_found = True
+                                    executed_steps.append(f"✅ کلیک دکمه #{button_index}: {button_text}")
+                                else:
+                                    executed_steps.append(f"⚠️ دکمه شماره {button_index} وجود ندارد (تعداد: {len(all_buttons)})")
+                            else:
+                                # کلیک با جستجوی متن (روش قبلی)
+                                for row in messages[0].buttons:
+                                    for button in row:
+                                        button_text = button.text if hasattr(button, 'text') else str(button)
+                                        
+                                        # جستجوی جزئی
+                                        clean_button = ''.join(c for c in button_text if c.isalnum() or c.isspace()).strip().lower()
+                                        clean_search = ''.join(c for c in value if c.isalnum() or c.isspace()).strip().lower()
+                                        
+                                        if clean_search in clean_button:
+                                            await button.click()
+                                            button_found = True
+                                            executed_steps.append(f"✅ کلیک دکمه: {button_text}")
+                                            break
+                                    
+                                    if button_found:
+                                        break
+                            
+                            if not button_found and button_index is None:
                                 executed_steps.append(f"⚠️ دکمه '{value}' پیدا نشد")
                         else:
                             executed_steps.append(f"⚠️ دکمه‌ای وجود ندارد")
@@ -153,6 +245,50 @@ class BotAutomation:
                         wait_time = int(value) if value else delay
                         await asyncio.sleep(wait_time)
                         executed_steps.append(f"⏱ صبر {wait_time} ثانیه")
+                    
+                    elif action == 'forward':
+                        # فوروارد پیام‌های اخیر
+                        # فرمت: forward: N, @target
+                        # مثال: forward: 5, @mychannel
+                        try:
+                            parts = value.split(',', 1)
+                            if len(parts) != 2:
+                                executed_steps.append(f"❌ فرمت نادرست! استفاده: forward: N, @target")
+                                continue
+                            
+                            count = int(parts[0].strip())
+                            target = parts[1].strip().lstrip('@')
+                            
+                            # دریافت آخرین پیام‌های ربات
+                            messages = await client.get_messages(bot, limit=count)
+                            
+                            if not messages:
+                                executed_steps.append(f"⚠️ پیامی برای فوروارد وجود ندارد")
+                                continue
+                            
+                            # دریافت entity هدف
+                            try:
+                                target_entity = await client.get_entity(target)
+                            except Exception as e:
+                                executed_steps.append(f"❌ هدف '{target}' پیدا نشد: {str(e)[:30]}")
+                                continue
+                            
+                            # فوروارد پیام‌ها
+                            forwarded_count = 0
+                            for msg in reversed(messages):  # از قدیمی به جدید
+                                try:
+                                    await client.forward_messages(target_entity, msg)
+                                    forwarded_count += 1
+                                    await asyncio.sleep(0.5)  # تاخیر کوچک بین فوروارد
+                                except Exception as e:
+                                    logger.error(f"خطا در فوروارد پیام: {e}")
+                            
+                            executed_steps.append(f"✅ فوروارد {forwarded_count} پیام به @{target}")
+                        
+                        except ValueError:
+                            executed_steps.append(f"❌ تعداد نامعتبر! باید عدد باشد")
+                        except Exception as e:
+                            executed_steps.append(f"❌ خطا در فوروارد: {str(e)[:30]}")
                     
                     # تاخیر بین مراحل
                     await asyncio.sleep(delay)
