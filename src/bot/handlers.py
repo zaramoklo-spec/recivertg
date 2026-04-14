@@ -2825,7 +2825,7 @@ class BotHandler:
                                     
                                     # ذخیره پیشرفت بعد از هر اکانت
                                     current_index = start_index + index
-                                    total_accounts = len(active_accounts)
+                                    total_accounts = len(state['active_accounts'])
                                     await self.db.save_scenario_progress(
                                         user_id, scenario_text, current_index, total_accounts
                                     )
@@ -2883,7 +2883,7 @@ class BotHandler:
                             del self.running_operations[user_id]
                         
                         # اگر سناریو کامل شد، پیشرفت رو پاک کن
-                        if not cancel_flag.get('cancelled') and (start_index + total) >= len(active_accounts):
+                        if not cancel_flag.get('cancelled') and (start_index + total) >= len(state['active_accounts']):
                             await self.db.delete_scenario_progress(user_id, scenario_text)
                         
                         # ساخت فایل گزارش کامل
