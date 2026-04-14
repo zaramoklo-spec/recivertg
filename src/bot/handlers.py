@@ -426,12 +426,20 @@ class BotHandler:
                 )
                 return
             
+            # محدود کردن تعداد نمایش برای جلوگیری از خطای "Message too long"
+            max_display = 50
             text = title
-            for i, acc in enumerate(accounts, 1):
+            text += f"📊 تعداد کل: {len(accounts)} اکانت\n\n"
+            
+            for i, acc in enumerate(accounts[:max_display], 1):
                 status_emoji = "✅" if acc.status == "active" else "❌"
                 text += f"{i}. {status_emoji} {acc.phone}\n"
                 text += f"   👤 @{acc.telegram_username or 'ندارد'}\n"
                 text += f"   📅 {acc.created_at[:10]}\n\n"
+            
+            if len(accounts) > max_display:
+                text += f"... و {len(accounts) - max_display} اکانت دیگر\n\n"
+                text += f"💡 برای مشاهده همه، از دستور /accounts استفاده کنید"
             
             await event.edit(
                 text,
@@ -2617,6 +2625,54 @@ class BotHandler:
                         )
                         return
                 
+                # ذخیره اکانت‌های انتخاب شده
+                state['selected_accounts'] = selected_accounts
+                state['step'] = 'scenario_workers'
+                
+                # پرسیدن تعداد worker
+                await event.respond(
+                    f"⚡ **سرعت اجرا**\n\n"
+                    f"📊 تعداد اکانت‌های انتخاب شده: {len(selected_accounts)}\n\n"
+                    f"چند تا اکانت همزمان اجرا شوند؟\n\n"
+                    f"💡 **توصیه:**\n"
+                    f"• `1` - یکی یکی (کندتر ولی امن‌تر)\n"
+                    f"• `3` - 3 تا همزمان (متعادل) ✅\n"
+                    f"• `5` - 5 تا همزمان (سریع‌تر)\n"
+                    f"• `10` - 10 تا همزمان (خیلی سریع ولی ممکنه مشکل بده)\n\n"
+                    f"⚠️ **نکته:** هرچه عدد بیشتر، سریع‌تر ولی فشار بیشتر روی سرور",
+                    buttons=Button.inline("❌ لغو", b"cancel")
+                )
+            
+            elif step == 'scenario_workers':
+                # دریافت تعداد worker
+                try:
+                    workers = int(event.message.text.strip())
+                    if workers < 1:
+                        await event.respond(
+                            "❌ تعداد باید حداقل 1 باشد!",
+                            buttons=Button.inline("❌ لغو", b"cancel")
+                        )
+                        return
+                    if workers > 20:
+                        await event.respond(
+                            "❌ حداکثر 20 worker مجاز است!",
+                            buttons=Button.inline("❌ لغو", b"cancel")
+                        )
+                        return
+                except ValueError:
+                    await event.respond(
+                        "❌ لطفاً یک عدد معتبر ارسال کنید (مثلاً 3)",
+                        buttons=Button.inline("❌ لغو", b"cancel")
+                    )
+                    return
+                
+                # دریافت اطلاعات از state
+                selected_accounts = state['selected_accounts']
+                scenario_summary = state['scenario_summary']
+                is_multi_bot = state.get('multi_bot', False)
+                start_index = state.get('start_index', 0)
+                resume_mode = state.get('resume_mode', False)
+                
                 # بررسی قفل سشن‌ها - فقط برای اطلاع‌رسانی
                 # قفل واقعی per-session در حین اجرا انجام می‌شه
                 session_paths = [acc.session_path for acc in selected_accounts]
@@ -2629,11 +2685,13 @@ class BotHandler:
                 
                 # ارسال پیام شروع با دکمه‌های کنترل
                 resume_text = f"▶️ ادامه از اکانت {start_index + 1}\n" if resume_mode else ""
+                worker_text = f"⚡ همزمان: {workers} اکانت\n" if workers > 1 else ""
                 progress_msg = await event.respond(
                     f"⏳ **شروع اجرای سناریو**\n\n"
                     f"{scenario_summary}\n"
                     f"{resume_text}"
                     f"📊 تعداد اکانت‌ها: {total}\n"
+                    f"{worker_text}"
                     f"⏱ تاخیر بین هر اکانت: {Config.DELAY_BETWEEN_ACTIONS}-{Config.DELAY_BETWEEN_ACTIONS + Config.DELAY_RANDOM_RANGE} ثانیه\n\n"
                     f"✅ **عملیات در پس‌زمینه شروع شد!**\n"
                     f"💡 می‌توانید کارهای دیگر انجام دهید.",
@@ -2648,127 +2706,168 @@ class BotHandler:
                     used_sessions = set()
                     
                     try:
-                        # اجرای سناریو با قفل per-session
+                        # اجرای سناریو با قفل per-session و worker pool
                         results = {
                             'success': 0,
                             'failed': 0,
                             'cancelled': 0,
-                            'details': []
+                            'details': [],
+                            'lock': asyncio.Lock()  # برای thread-safe بودن results
                         }
                         
                         total = len(selected_accounts)
+                        completed = {'count': 0}  # تعداد تکمیل شده
                         
-                        for index, account in enumerate(selected_accounts, 1):
-                            # بررسی لغو عملیات
-                            if cancel_flag.get('cancelled'):
-                                results['cancelled'] = total - index + 1
-                                break
+                        # تابع worker برای اجرای هر اکانت
+                        async def process_account(account, index):
+                            nonlocal completed
                             
-                            # بررسی توقف موقت
-                            while cancel_flag.get('paused'):
-                                await asyncio.sleep(1)
-                                # اگر در حین توقف، لغو شد
+                            try:
+                                # بررسی لغو عملیات
+                                if cancel_flag.get('cancelled'):
+                                    return
+                                
+                                # بررسی توقف موقت
+                                while cancel_flag.get('paused'):
+                                    await asyncio.sleep(1)
+                                    if cancel_flag.get('cancelled'):
+                                        return
+                                
+                                session_path = account.session_path
+                                
+                                # صبر تا سشن آزاد بشه (حداکثر 5 دقیقه)
+                                max_wait = 300
+                                wait_time = 0
+                                while session_path in self.session_locks and wait_time < max_wait:
+                                    await asyncio.sleep(1)
+                                    wait_time += 1
+                                
+                                # اگر هنوز قفله، skip کن
+                                if session_path in self.session_locks:
+                                    async with results['lock']:
+                                        results['failed'] += 1
+                                        results['details'].append({
+                                            'session': Path(session_path).name,
+                                            'result': {
+                                                'success': False,
+                                                'message': 'سشن بعد از 5 دقیقه هنوز قفل بود'
+                                            }
+                                        })
+                                    return
+                                
+                                # قفل کردن سشن
+                                self.session_locks.add(session_path)
+                                used_sessions.add(session_path)
+                                
+                                # بروزرسانی پیشرفت
+                                try:
+                                    phone_short = account.phone[-4:] if account.phone else "****"
+                                    async with results['lock']:
+                                        completed['count'] += 1
+                                        current = completed['count']
+                                    
+                                    if is_multi_bot:
+                                        await progress_msg.edit(
+                                            f"⏳ **در حال اجرا...**\n\n"
+                                            f"📊 پیشرفت: {current}/{total}\n"
+                                            f"⚡ همزمان: {workers} اکانت\n"
+                                            f"💬 در حال پردازش...",
+                                            buttons=[
+                                                [Button.inline("⏸ توقف موقت", b"pause_scenario")],
+                                                [Button.inline("🛑 لغو کامل", b"cancel_scenario")]
+                                            ]
+                                        )
+                                    else:
+                                        bot_username = state['bot_username']
+                                        await progress_msg.edit(
+                                            f"⏳ **در حال اجرا...**\n\n"
+                                            f"🤖 ربات: @{bot_username}\n"
+                                            f"📊 پیشرفت: {current}/{total}\n"
+                                            f"⚡ همزمان: {workers} اکانت\n"
+                                            f"💬 در حال پردازش...",
+                                            buttons=[
+                                                [Button.inline("⏸ توقف موقت", b"pause_scenario")],
+                                                [Button.inline("🛑 لغو کامل", b"cancel_scenario")]
+                                            ]
+                                        )
+                                except:
+                                    pass
+                                
+                                # اجرای سناریو
+                                try:
+                                    if is_multi_bot:
+                                        bots_scenarios = state['bots_scenarios']
+                                        result = await self.bot_automation.execute_multi_bot_scenario(
+                                            session_path, bots_scenarios
+                                        )
+                                    else:
+                                        bot_username = state['bot_username']
+                                        scenario = state['scenario']
+                                        result = await self.bot_automation.execute_scenario(
+                                            session_path, bot_username, scenario
+                                        )
+                                    
+                                    async with results['lock']:
+                                        if result['success']:
+                                            results['success'] += 1
+                                        else:
+                                            results['failed'] += 1
+                                        
+                                        results['details'].append({
+                                            'session': Path(session_path).name,
+                                            'result': result
+                                        })
+                                
+                                finally:
+                                    # آزاد کردن سشن بلافاصله بعد از استفاده
+                                    self.session_locks.discard(session_path)
+                                    used_sessions.discard(session_path)
+                                    
+                                    # ذخیره پیشرفت بعد از هر اکانت
+                                    current_index = start_index + index
+                                    total_accounts = len(active_accounts)
+                                    await self.db.save_scenario_progress(
+                                        user_id, scenario_text, current_index, total_accounts
+                                    )
+                                
+                            except Exception as e:
+                                logger.error(f"خطا در worker: {e}")
+                                async with results['lock']:
+                                    results['failed'] += 1
+                        
+                        # اجرای همزمان با worker pool
+                        if workers == 1:
+                            # حالت تک worker (یکی یکی)
+                            for index, account in enumerate(selected_accounts, 1):
                                 if cancel_flag.get('cancelled'):
                                     results['cancelled'] = total - index + 1
                                     break
-                            
-                            # اگر لغو شده، از حلقه خارج شو
-                            if cancel_flag.get('cancelled'):
-                                break
-                            
-                            session_path = account.session_path
-                            
-                            # صبر تا سشن آزاد بشه (حداکثر 5 دقیقه)
-                            max_wait = 300
-                            wait_time = 0
-                            while session_path in self.session_locks and wait_time < max_wait:
-                                await asyncio.sleep(1)
-                                wait_time += 1
-                            
-                            # اگر هنوز قفله، skip کن
-                            if session_path in self.session_locks:
-                                results['failed'] += 1
-                                results['details'].append({
-                                    'session': Path(session_path).name,
-                                    'result': {
-                                        'success': False,
-                                        'message': 'سشن بعد از 5 دقیقه هنوز قفل بود'
-                                    }
-                                })
-                                continue
-                            
-                            # قفل کردن سشن
-                            self.session_locks.add(session_path)
-                            used_sessions.add(session_path)
-                            
-                            # بروزرسانی پیشرفت
-                            try:
-                                phone_short = account.phone[-4:] if account.phone else "****"
-                                if is_multi_bot:
-                                    await progress_msg.edit(
-                                        f"⏳ **در حال اجرا...**\n\n"
-                                        f"📊 پیشرفت: {index}/{total}\n"
-                                        f"💬 اکانت {phone_short}...",
-                                        buttons=[
-                                            [Button.inline("⏸ توقف موقت", b"pause_scenario")],
-                                            [Button.inline("🛑 لغو کامل", b"cancel_scenario")]
-                                        ]
-                                    )
-                                else:
-                                    bot_username = state['bot_username']
-                                    await progress_msg.edit(
-                                        f"⏳ **در حال اجرا...**\n\n"
-                                        f"🤖 ربات: @{bot_username}\n"
-                                        f"📊 پیشرفت: {index}/{total}\n"
-                                        f"💬 اکانت {phone_short}...",
-                                        buttons=[
-                                            [Button.inline("⏸ توقف موقت", b"pause_scenario")],
-                                            [Button.inline("🛑 لغو کامل", b"cancel_scenario")]
-                                        ]
-                                    )
-                            except:
-                                pass
-                            
-                            # اجرای سناریو
-                            try:
-                                if is_multi_bot:
-                                    bots_scenarios = state['bots_scenarios']
-                                    result = await self.bot_automation.execute_multi_bot_scenario(
-                                        session_path, bots_scenarios
-                                    )
-                                else:
-                                    bot_username = state['bot_username']
-                                    scenario = state['scenario']
-                                    result = await self.bot_automation.execute_scenario(
-                                        session_path, bot_username, scenario
-                                    )
+                                await process_account(account, index)
+                                # تاخیر بین اکانت‌ها
+                                if index < total and not cancel_flag.get('cancelled'):
+                                    delay = Config.DELAY_BETWEEN_ACTIONS + random.randint(0, Config.DELAY_RANDOM_RANGE)
+                                    await asyncio.sleep(delay)
+                        else:
+                            # حالت چند worker (همزمان)
+                            tasks = []
+                            for index, account in enumerate(selected_accounts, 1):
+                                if cancel_flag.get('cancelled'):
+                                    results['cancelled'] = total - index + 1
+                                    break
+                                task = asyncio.create_task(process_account(account, index))
+                                tasks.append(task)
                                 
-                                if result['success']:
-                                    results['success'] += 1
-                                else:
-                                    results['failed'] += 1
-                                
-                                results['details'].append({
-                                    'session': Path(session_path).name,
-                                    'result': result
-                                })
+                                # اگر تعداد task ها به حد worker رسید، صبر کن
+                                if len(tasks) >= workers:
+                                    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                                    # حذف task های تکمیل شده
+                                    tasks = [t for t in tasks if not t.done()]
+                                    # تاخیر کوچک
+                                    await asyncio.sleep(0.5)
                             
-                            finally:
-                                # آزاد کردن سشن بلافاصله بعد از استفاده
-                                self.session_locks.discard(session_path)
-                                used_sessions.discard(session_path)
-                                
-                                # ذخیره پیشرفت بعد از هر اکانت
-                                current_index = start_index + index
-                                total_accounts = len(active_accounts)
-                                await self.db.save_scenario_progress(
-                                    user_id, scenario_text, current_index, total_accounts
-                                )
-                            
-                            # تاخیر بین اکانت‌ها
-                            if index < total and not cancel_flag.get('cancelled'):
-                                delay = Config.DELAY_BETWEEN_ACTIONS + random.randint(0, Config.DELAY_RANDOM_RANGE)
-                                await asyncio.sleep(delay)
+                            # صبر برای تکمیل همه task ها
+                            if tasks:
+                                await asyncio.gather(*tasks, return_exceptions=True)
                         
                         # نمایش نتایج
                         results_text = "📊 **نتایج اجرای سناریو:**\n\n"
