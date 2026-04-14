@@ -2413,6 +2413,7 @@ class BotHandler:
                         buttons = [
                             [Button.inline(f"▶️ ادامه از اکانت {last_index + 1}", b"resume_scenario")],
                             [Button.inline("🔄 شروع از اول", b"restart_scenario")],
+                            [Button.inline("🎯 انتخاب دستی", b"manual_select_scenario")],
                             [Button.inline("❌ لغو", b"cancel")]
                         ]
                         
@@ -2492,6 +2493,7 @@ class BotHandler:
                         buttons = [
                             [Button.inline(f"▶️ ادامه از اکانت {last_index + 1}", b"resume_scenario")],
                             [Button.inline("🔄 شروع از اول", b"restart_scenario")],
+                            [Button.inline("🎯 انتخاب دستی", b"manual_select_scenario")],
                             [Button.inline("❌ لغو", b"cancel")]
                         ]
                         
@@ -3315,6 +3317,37 @@ class BotHandler:
             
             await event.edit(
                 f"🔄 **شروع از اول**\n\n"
+                f"📊 شما {len(active_accounts)} اکانت فعال دارید.\n\n"
+                f"چند تا اکانت برای اجرای سناریو استفاده شود؟\n\n"
+                f"💡 **گزینه‌ها:**\n"
+                f"• عدد بفرست (مثلاً `5`) - از اول شروع میشه\n"
+                f"• `/all` - همه اکانت‌ها\n"
+                f"• `/from 70` - از اکانت 70 شروع کن\n"
+                f"• `/from 70 to 100` - از 70 تا 100",
+                buttons=Button.inline("❌ لغو", b"cancel")
+            )
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"manual_select_scenario"))
+        async def manual_select_scenario_callback(event):
+            """انتخاب دستی محدوده اکانت‌ها"""
+            user_id = event.sender_id
+            
+            if user_id not in self.user_states:
+                await event.answer("❌ خطا! لطفاً دوباره تلاش کنید.", alert=True)
+                return
+            
+            await event.answer()
+            
+            state = self.user_states[user_id]
+            
+            # تنظیم برای انتخاب دستی
+            state['start_index'] = 0
+            state['resume_mode'] = False
+            
+            active_accounts = state['active_accounts']
+            
+            await event.edit(
+                f"🎯 **انتخاب دستی محدوده**\n\n"
                 f"📊 شما {len(active_accounts)} اکانت فعال دارید.\n\n"
                 f"چند تا اکانت برای اجرای سناریو استفاده شود؟\n\n"
                 f"💡 **گزینه‌ها:**\n"
