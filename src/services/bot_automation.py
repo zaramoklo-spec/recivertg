@@ -255,24 +255,34 @@ class BotAutomation:
                         executed_steps.append(f"⏸ توقف {stop_time} ثانیه")
                     
                     elif action == 'forward':
-                        # فوروارد پیام‌های اخیر
-                        # فرمت: forward: N, @target
-                        # مثال: forward: 5, @mychannel
+                        # فوروارد پیام‌های اخیر یا پیام خاص
+                        # فرمت 1: forward: N, @target (N تا پیام آخر)
+                        # فرمت 2: forward: "متن", @target (پیام حاوی متن مشخص)
+                        # مثال 1: forward: 5, @mychannel
+                        # مثال 2: forward: "لینک شما", @mychannel
                         try:
                             parts = value.split(',', 1)
                             if len(parts) != 2:
-                                executed_steps.append(f"❌ فرمت نادرست! استفاده: forward: N, @target")
+                                executed_steps.append(f"❌ فرمت نادرست! استفاده: forward: N, @target یا forward: \"متن\", @target")
                                 continue
                             
-                            count = int(parts[0].strip())
+                            first_part = parts[0].strip()
                             target = parts[1].strip().lstrip('@')
                             
-                            # دریافت آخرین پیام‌های ربات
-                            messages = await client.get_messages(bot, limit=count)
+                            # تشخیص نوع: عدد یا متن
+                            search_text = None
+                            count = None
                             
-                            if not messages:
-                                executed_steps.append(f"⚠️ پیامی برای فوروارد وجود ندارد")
-                                continue
+                            # اگر با " یا ' شروع شده، متن جستجو است
+                            if (first_part.startswith('"') and first_part.endswith('"')) or \
+                               (first_part.startswith("'") and first_part.endswith("'")):
+                                search_text = first_part[1:-1]  # حذف کوتیشن‌ها
+                            else:
+                                try:
+                                    count = int(first_part)
+                                except ValueError:
+                                    executed_steps.append(f"❌ فرمت نادرست! باید عدد یا \"متن\" باشد")
+                                    continue
                             
                             # دریافت entity هدف
                             try:
@@ -281,9 +291,34 @@ class BotAutomation:
                                 executed_steps.append(f"❌ هدف '{target}' پیدا نشد: {str(e)[:30]}")
                                 continue
                             
+                            # دریافت پیام‌ها
+                            if search_text:
+                                # جستجوی پیام حاوی متن خاص (100 پیام آخر رو چک می‌کنیم)
+                                messages = await client.get_messages(bot, limit=100)
+                                matching_messages = []
+                                
+                                for msg in messages:
+                                    if msg.text and search_text.lower() in msg.text.lower():
+                                        matching_messages.append(msg)
+                                
+                                if not matching_messages:
+                                    executed_steps.append(f"⚠️ پیامی حاوی '{search_text}' پیدا نشد")
+                                    continue
+                                
+                                messages_to_forward = matching_messages
+                            else:
+                                # دریافت N تا پیام آخر
+                                messages = await client.get_messages(bot, limit=count)
+                                
+                                if not messages:
+                                    executed_steps.append(f"⚠️ پیامی برای فوروارد وجود ندارد")
+                                    continue
+                                
+                                messages_to_forward = messages
+                            
                             # فوروارد پیام‌ها
                             forwarded_count = 0
-                            for msg in reversed(messages):  # از قدیمی به جدید
+                            for msg in reversed(messages_to_forward):  # از قدیمی به جدید
                                 try:
                                     await client.forward_messages(target_entity, msg)
                                     forwarded_count += 1
@@ -291,10 +326,11 @@ class BotAutomation:
                                 except Exception as e:
                                     logger.error(f"خطا در فوروارد پیام: {e}")
                             
-                            executed_steps.append(f"✅ فوروارد {forwarded_count} پیام به @{target}")
+                            if search_text:
+                                executed_steps.append(f"✅ فوروارد {forwarded_count} پیام حاوی '{search_text}' به @{target}")
+                            else:
+                                executed_steps.append(f"✅ فوروارد {forwarded_count} پیام به @{target}")
                         
-                        except ValueError:
-                            executed_steps.append(f"❌ تعداد نامعتبر! باید عدد باشد")
                         except Exception as e:
                             executed_steps.append(f"❌ خطا در فوروارد: {str(e)[:30]}")
                     
