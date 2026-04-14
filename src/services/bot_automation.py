@@ -246,6 +246,14 @@ class BotAutomation:
                         await asyncio.sleep(wait_time)
                         executed_steps.append(f"⏱ صبر {wait_time} ثانیه")
                     
+                    elif action == 'stop':
+                        # توقف موقت سناریو
+                        # فرمت: stop: N (N ثانیه توقف)
+                        # یا: stop: (توقف پیش‌فرض 5 ثانیه)
+                        stop_time = int(value) if value and value.isdigit() else 5
+                        await asyncio.sleep(stop_time)
+                        executed_steps.append(f"⏸ توقف {stop_time} ثانیه")
+                    
                     elif action == 'forward':
                         # فوروارد پیام‌های اخیر
                         # فرمت: forward: N, @target
@@ -412,3 +420,165 @@ class BotAutomation:
                 })
         
         return scenario
+    
+    @staticmethod
+    def parse_multi_bot_scenario(scenario_text: str) -> List[Dict]:
+        """
+        تجزیه سناریو چند ربات
+        
+        فرمت:
+        @bot1
+        start: ref1
+        send: text1
+        
+        @bot2
+        start: ref2
+        send: text2
+        
+        Args:
+            scenario_text: متن سناریو
+            
+        Returns:
+            لیست دیکشنری‌ها با bot_username و scenario
+        """
+        bots = []
+        current_bot = None
+        current_scenario = []
+        
+        lines = scenario_text.strip().split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            
+            # خط خالی یا کامنت
+            if not line or line.startswith('#'):
+                continue
+            
+            # شروع ربات جدید
+            if line.startswith('@'):
+                # ذخیره ربات قبلی
+                if current_bot and current_scenario:
+                    bots.append({
+                        'bot_username': current_bot,
+                        'scenario': current_scenario
+                    })
+                
+                # شروع ربات جدید
+                current_bot = line.lstrip('@')
+                current_scenario = []
+            
+            # دستورات سناریو
+            elif ':' in line and current_bot:
+                action, value = line.split(':', 1)
+                action = action.strip().lower()
+                value = value.strip()
+                
+                current_scenario.append({
+                    'action': action,
+                    'value': value,
+                    'delay': 2
+                })
+        
+        # ذخیره آخرین ربات
+        if current_bot and current_scenario:
+            bots.append({
+                'bot_username': current_bot,
+                'scenario': current_scenario
+            })
+        
+        return bots
+    
+    async def execute_multi_bot_scenario(self, session_path: str, 
+                                         bots_scenarios: List[Dict]) -> Dict[str, any]:
+        """
+        اجرای سناریو چند ربات
+        
+        Args:
+            session_path: مسیر فایل سشن
+            bots_scenarios: لیست ربات‌ها و سناریوهایشان
+            
+        Returns:
+            دیکشنری حاوی نتایج
+        """
+        all_results = []
+        
+        for bot_data in bots_scenarios:
+            bot_username = bot_data['bot_username']
+            scenario = bot_data['scenario']
+            
+            logger.info(f"اجرای سناریو برای ربات @{bot_username}")
+            
+            result = await self.execute_scenario(session_path, bot_username, scenario)
+            all_results.append({
+                'bot': bot_username,
+                'result': result
+            })
+            
+            # تاخیر بین رباتها
+            await asyncio.sleep(2)
+        
+        return {
+            'success': all([r['result']['success'] for r in all_results]),
+            'message': f"اجرای {len(all_results)} ربات",
+            'results': all_results
+        }
+    
+    async def bulk_execute_multi_bot_scenario(self, session_paths: List[str],
+                                              bots_scenarios: List[Dict],
+                                              progress_callback=None,
+                                              cancel_flag: Optional[Dict] = None) -> Dict[str, any]:
+        """
+        اجرای دسته‌جمعی سناریو چند ربات
+        
+        Args:
+            session_paths: لیست مسیر فایل‌های سشن
+            bots_scenarios: لیست ربات‌ها و سناریوهایشان
+            progress_callback: تابع callback برای نمایش پیشرفت
+            cancel_flag: دیکشنری برای بررسی لغو عملیات
+            
+        Returns:
+            دیکشنری حاوی نتایج
+        """
+        results = {
+            'success': 0,
+            'failed': 0,
+            'cancelled': 0,
+            'details': []
+        }
+        
+        total = len(session_paths)
+        
+        for index, session_path in enumerate(session_paths, 1):
+            # بررسی لغو عملیات
+            if cancel_flag and cancel_flag.get('cancelled'):
+                logger.info(f"عملیات توسط کاربر لغو شد در مرحله {index}/{total}")
+                results['cancelled'] = total - index + 1
+                break
+            
+            # محاسبه تاخیر تصادفی
+            delay = Config.DELAY_BETWEEN_ACTIONS + random.randint(0, Config.DELAY_RANDOM_RANGE)
+            
+            # اگر callback داریم، پیشرفت رو نمایش بدیم
+            if progress_callback:
+                await progress_callback(index, total, f"در حال اجرای سناریو {index}/{total}...")
+            
+            logger.info(f"اجرای سناریو چند ربات برای اکانت {index}/{total}")
+            
+            result = await self.execute_multi_bot_scenario(session_path, bots_scenarios)
+            
+            if result['success']:
+                results['success'] += 1
+            else:
+                results['failed'] += 1
+            
+            results['details'].append({
+                'session': Path(session_path).name,
+                'result': result
+            })
+            
+            # تاخیر بین عملیات‌ها
+            if index < total:
+                logger.info(f"صبر {delay} ثانیه قبل از عملیات بعدی...")
+                await asyncio.sleep(delay)
+        
+        return results

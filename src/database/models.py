@@ -95,6 +95,23 @@ class Database:
                 )
             """)
             
+            # جدول پیشرفت سناریوها
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS scenario_progress (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    scenario_hash TEXT NOT NULL,
+                    scenario_text TEXT NOT NULL,
+                    last_account_index INTEGER DEFAULT 0,
+                    total_accounts INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    status TEXT DEFAULT 'paused',
+                    FOREIGN KEY (user_id) REFERENCES users (user_id),
+                    UNIQUE(user_id, scenario_hash)
+                )
+            """)
+            
             await db.commit()
             
             # Migration: اضافه کردن ستون added_by اگر وجود نداره
@@ -347,3 +364,76 @@ class Database:
         except Exception as e:
             print(f"خطا در ذخیره تنظیمات: {e}")
             return False
+
+    async def save_scenario_progress(self, user_id: int, scenario_text: str, 
+                                     last_index: int, total: int) -> bool:
+        """ذخیره پیشرفت سناریو"""
+        try:
+            import hashlib
+            scenario_hash = hashlib.md5(scenario_text.encode()).hexdigest()
+            
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    INSERT OR REPLACE INTO scenario_progress 
+                    (user_id, scenario_hash, scenario_text, last_account_index, 
+                     total_accounts, updated_at, status)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'paused')
+                """, (user_id, scenario_hash, scenario_text, last_index, total))
+                await db.commit()
+                return True
+        except Exception as e:
+            print(f"خطا در ذخیره پیشرفت سناریو: {e}")
+            return False
+    
+    async def get_scenario_progress(self, user_id: int, scenario_text: str) -> Optional[Dict[str, Any]]:
+        """دریافت پیشرفت سناریو"""
+        try:
+            import hashlib
+            scenario_hash = hashlib.md5(scenario_text.encode()).hexdigest()
+            
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("""
+                    SELECT * FROM scenario_progress 
+                    WHERE user_id = ? AND scenario_hash = ?
+                """, (user_id, scenario_hash)) as cursor:
+                    row = await cursor.fetchone()
+                    if row:
+                        return dict(row)
+                    return None
+        except Exception as e:
+            print(f"خطا در دریافت پیشرفت سناریو: {e}")
+            return None
+    
+    async def delete_scenario_progress(self, user_id: int, scenario_text: str) -> bool:
+        """حذف پیشرفت سناریو"""
+        try:
+            import hashlib
+            scenario_hash = hashlib.md5(scenario_text.encode()).hexdigest()
+            
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    DELETE FROM scenario_progress 
+                    WHERE user_id = ? AND scenario_hash = ?
+                """, (user_id, scenario_hash))
+                await db.commit()
+                return True
+        except Exception as e:
+            print(f"خطا در حذف پیشرفت سناریو: {e}")
+            return False
+    
+    async def get_user_scenario_progresses(self, user_id: int) -> List[Dict[str, Any]]:
+        """دریافت همه پیشرفت‌های سناریوی یک کاربر"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("""
+                    SELECT * FROM scenario_progress 
+                    WHERE user_id = ?
+                    ORDER BY updated_at DESC
+                """, (user_id,)) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+        except Exception as e:
+            print(f"خطا در دریافت پیشرفت‌های سناریو: {e}")
+            return []

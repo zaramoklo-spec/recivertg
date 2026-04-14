@@ -39,6 +39,41 @@ class BotHandler:
         
         # ذخیره وضعیت عملیات‌های در حال اجرا (برای لغو)
         self.running_operations = {}
+        
+        # قفل سشن‌ها - برای جلوگیری از استفاده همزمان از یک سشن
+        self.session_locks = set()  # مجموعه session_path های در حال استفاده
+    
+    def _lock_sessions(self, session_paths: list) -> tuple:
+        """
+        قفل کردن سشن‌ها برای استفاده
+        
+        Args:
+            session_paths: لیست مسیر سشن‌ها
+            
+        Returns:
+            (available_sessions, locked_sessions)
+        """
+        available = []
+        locked = []
+        
+        for path in session_paths:
+            if path not in self.session_locks:
+                available.append(path)
+                self.session_locks.add(path)
+            else:
+                locked.append(path)
+        
+        return available, locked
+    
+    def _unlock_sessions(self, session_paths: list):
+        """
+        آزاد کردن سشن‌ها بعد از استفاده
+        
+        Args:
+            session_paths: لیست مسیر سشن‌ها
+        """
+        for path in session_paths:
+            self.session_locks.discard(path)
     
     async def _ask_account_count(self, event, user_id, total_accounts: int, next_step: str, operation_name: str):
         """
@@ -1150,19 +1185,21 @@ class BotHandler:
                 "یوزرنیم/آیدی → بلاک یا انبلاک خودکار\n\n"
                 "**🎯 سناریو پیشرفته:**\n"
                 "سناریوی کامل برای تعامل با ربات‌ها\n"
-                "• دستورات: start, send, click, join, leave, wait, forward\n"
+                "• دستورات: start, send, click, join, leave, wait, stop, forward\n"
                 "• کلیک دکمه: با متن یا شماره (click: #0, click: 1)\n"
+                "• توقف موقت: stop: 5 (5 ثانیه توقف)\n"
                 "• فوروارد نتایج: forward: 5, @mychannel\n"
                 "• متغیرهای دینامیک: {random:N}, {random_upper:N}, {random_num:N}\n"
-                "• مثال: `send: سلام من {random:5} هستم`\n"
-                "• هر اکانت یک مقدار تصادفی متفاوت دریافت می‌کند\n\n"
+                "• پشتیبانی از چند ربات در یک سناریو\n"
+                "• گزارش کامل در فایل .txt\n\n"
                 "💡 **نکات:**\n"
                 "• همه عملیات با تایمر و تاخیر انجام می‌شود\n"
                 "• برای جلوگیری از بن، تنظیمات را تغییر ندهید\n"
                 "• اکانت‌های خود را به صورت دوره‌ای چک کنید\n"
                 "• از متغیرهای دینامیک برای یونیک بودن استفاده کنید\n"
                 "• از شماره دکمه وقتی متن دکمه‌ها متفاوت است\n"
-                "• از forward برای جمع‌آوری نتایج در یک کانال"
+                "• از forward برای جمع‌آوری نتایج در یک کانال\n"
+                "• از stop برای توقف موقت بین مراحل"
             )
             
             await event.edit(
@@ -1235,9 +1272,11 @@ class BotHandler:
                 del self.user_states[event.sender_id]
             await event.respond("❌ عملیات لغو شد.")
         
-        @self.bot.on(events.NewMessage(func=lambda e: not e.message.text.startswith('/')))
+        @self.bot.on(events.NewMessage(func=lambda e: (not e.message.text.startswith('/')) or 
+                                                      (e.message.text.lower() in ['/all']) or 
+                                                      (e.message.text.lower().startswith('/from '))))
         async def message_handler(event):
-            """هندلر پیام‌های عادی"""
+            """هندلر پیام‌های عادی و دستورات خاص"""
             user_id = event.sender_id
             
             if user_id not in self.user_states:
@@ -2313,75 +2352,247 @@ class BotHandler:
                 # دریافت سناریو
                 scenario_text = event.message.text.strip()
                 
-                # خط اول یوزرنیم ربات است
+                # بررسی اینکه آیا چند ربات داریم یا یک ربات
                 lines = scenario_text.split('\n')
-                if not lines:
+                bot_count = sum(1 for line in lines if line.strip().startswith('@'))
+                
+                if bot_count == 0:
                     await event.respond(
-                        "❌ سناریو خالی است!",
+                        "❌ سناریو باید با یوزرنیم ربات شروع شود! (مثال: @bot_name)",
                         buttons=Button.inline("❌ لغو", b"cancel")
                     )
                     return
                 
-                bot_username = lines[0].strip().lstrip('@')
-                scenario_commands = '\n'.join(lines[1:])
+                # اگر چند ربات داریم
+                if bot_count > 1:
+                    # تجزیه سناریو چند ربات
+                    bots_scenarios = self.bot_automation.parse_multi_bot_scenario(scenario_text)
+                    
+                    if not bots_scenarios:
+                        await event.respond(
+                            "❌ سناریو نامعتبر است! لطفاً فرمت صحیح را رعایت کنید.",
+                            buttons=Button.inline("❌ لغو", b"cancel")
+                        )
+                        return
+                    
+                    # دریافت اکانت‌های کاربر
+                    accounts = await self.db.get_accounts(user_id)
+                    active_accounts = [acc for acc in accounts if acc.status == 'active' and acc.session_path]
+                    
+                    if not active_accounts:
+                        await event.respond(
+                            "❌ شما اکانت فعالی ندارید.",
+                            buttons=Button.inline("🔙 منوی اصلی", b"back_to_menu")
+                        )
+                        del self.user_states[user_id]
+                        return
+                    
+                    # نمایش خلاصه سناریو
+                    scenario_summary = f"🤖 **{len(bots_scenarios)} ربات:**\n\n"
+                    for bot_data in bots_scenarios:
+                        bot_username = bot_data['bot_username']
+                        scenario = bot_data['scenario']
+                        scenario_summary += f"@{bot_username} ({len(scenario)} مرحله)\n"
+                    
+                    # ذخیره اطلاعات
+                    state['multi_bot'] = True
+                    state['bots_scenarios'] = bots_scenarios
+                    state['scenario_summary'] = scenario_summary
+                    state['active_accounts'] = active_accounts
+                    state['scenario_text'] = scenario_text  # ذخیره متن کامل سناریو
+                    state['step'] = 'scenario_count'
+                    
+                    # بررسی پیشرفت قبلی
+                    progress = await self.db.get_scenario_progress(user_id, scenario_text)
+                    
+                    if progress and progress['last_account_index'] > 0:
+                        # سناریو قبلاً شروع شده
+                        last_index = progress['last_account_index']
+                        total = progress['total_accounts']
+                        
+                        buttons = [
+                            [Button.inline(f"▶️ ادامه از اکانت {last_index + 1}", b"resume_scenario")],
+                            [Button.inline("🔄 شروع از اول", b"restart_scenario")],
+                            [Button.inline("❌ لغو", b"cancel")]
+                        ]
+                        
+                        await event.respond(
+                            f"⚠️ **سناریو قبلاً شروع شده!**\n\n"
+                            f"{scenario_summary}\n"
+                            f"📊 پیشرفت قبلی: {last_index}/{total} اکانت\n\n"
+                            f"می‌خواهید از کجا ادامه دهید؟",
+                            buttons=buttons
+                        )
+                    else:
+                        # سناریو جدید
+                        await event.respond(
+                            f"📊 **انتخاب تعداد اکانت**\n\n"
+                            f"{scenario_summary}\n"
+                            f"شما {len(active_accounts)} اکانت فعال دارید.\n\n"
+                            f"چند تا اکانت برای اجرای سناریو استفاده شود؟\n\n"
+                            f"💡 **گزینه‌ها:**\n"
+                            f"• عدد بفرست (مثلاً `5`) - از اول شروع میشه\n"
+                            f"• `/all` - همه اکانت‌ها\n"
+                            f"• `/from 70` - از اکانت 70 شروع کن\n"
+                            f"• `/from 70 to 100` - از 70 تا 100",
+                            buttons=Button.inline("❌ لغو", b"cancel")
+                        )
                 
-                # تجزیه سناریو
-                scenario = self.bot_automation.parse_scenario(scenario_commands)
-                
-                if not scenario:
-                    await event.respond(
-                        "❌ سناریو نامعتبر است! لطفاً فرمت صحیح را رعایت کنید.",
-                        buttons=Button.inline("❌ لغو", b"cancel")
-                    )
-                    return
-                
-                # دریافت اکانت‌های کاربر
-                accounts = await self.db.get_accounts(user_id)
-                active_accounts = [acc for acc in accounts if acc.status == 'active' and acc.session_path]
-                
-                if not active_accounts:
-                    await event.respond(
-                        "❌ شما اکانت فعالی ندارید.",
-                        buttons=Button.inline("🔙 منوی اصلی", b"back_to_menu")
-                    )
-                    del self.user_states[user_id]
-                    return
-                
-                # نمایش خلاصه سناریو
-                scenario_summary = f"🤖 ربات: @{bot_username}\n📋 مراحل:\n"
-                for i, step in enumerate(scenario, 1):
-                    action = step['action']
-                    value = step['value'][:30] if len(step['value']) > 30 else step['value']
-                    scenario_summary += f"{i}. {action}: {value}\n"
-                
-                # ذخیره اطلاعات و پرسیدن تعداد اکانت
-                state['bot_username'] = bot_username
-                state['scenario'] = scenario
-                state['scenario_summary'] = scenario_summary
-                state['active_accounts'] = active_accounts
-                state['step'] = 'scenario_count'
-                
-                await event.respond(
-                    f"📊 **انتخاب تعداد اکانت**\n\n"
-                    f"شما {len(active_accounts)} اکانت فعال دارید.\n\n"
-                    f"چند تا اکانت برای اجرای سناریو استفاده شود؟\n\n"
-                    f"💡 عدد ارسال کنید (مثلاً 5) یا:\n"
-                    f"• /all برای همه اکانت‌ها",
-                    buttons=Button.inline("❌ لغو", b"cancel")
-                )
+                else:
+                    # یک ربات (روش قبلی)
+                    bot_username = lines[0].strip().lstrip('@')
+                    scenario_commands = '\n'.join(lines[1:])
+                    
+                    # تجزیه سناریو
+                    scenario = self.bot_automation.parse_scenario(scenario_commands)
+                    
+                    if not scenario:
+                        await event.respond(
+                            "❌ سناریو نامعتبر است! لطفاً فرمت صحیح را رعایت کنید.",
+                            buttons=Button.inline("❌ لغو", b"cancel")
+                        )
+                        return
+                    
+                    # دریافت اکانت‌های کاربر
+                    accounts = await self.db.get_accounts(user_id)
+                    active_accounts = [acc for acc in accounts if acc.status == 'active' and acc.session_path]
+                    
+                    if not active_accounts:
+                        await event.respond(
+                            "❌ شما اکانت فعالی ندارید.",
+                            buttons=Button.inline("🔙 منوی اصلی", b"back_to_menu")
+                        )
+                        del self.user_states[user_id]
+                        return
+                    
+                    # نمایش خلاصه سناریو
+                    scenario_summary = f"🤖 ربات: @{bot_username}\n📋 مراحل:\n"
+                    for i, step in enumerate(scenario, 1):
+                        action = step['action']
+                        value = step['value'][:30] if len(step['value']) > 30 else step['value']
+                        scenario_summary += f"{i}. {action}: {value}\n"
+                    
+                    # ذخیره اطلاعات
+                    state['multi_bot'] = False
+                    state['bot_username'] = bot_username
+                    state['scenario'] = scenario
+                    state['scenario_summary'] = scenario_summary
+                    state['active_accounts'] = active_accounts
+                    state['scenario_text'] = scenario_text  # ذخیره متن کامل سناریو
+                    state['step'] = 'scenario_count'
+                    
+                    # بررسی پیشرفت قبلی
+                    progress = await self.db.get_scenario_progress(user_id, scenario_text)
+                    
+                    if progress and progress['last_account_index'] > 0:
+                        # سناریو قبلاً شروع شده
+                        last_index = progress['last_account_index']
+                        total = progress['total_accounts']
+                        
+                        buttons = [
+                            [Button.inline(f"▶️ ادامه از اکانت {last_index + 1}", b"resume_scenario")],
+                            [Button.inline("🔄 شروع از اول", b"restart_scenario")],
+                            [Button.inline("❌ لغو", b"cancel")]
+                        ]
+                        
+                        await event.respond(
+                            f"⚠️ **سناریو قبلاً شروع شده!**\n\n"
+                            f"{scenario_summary}\n"
+                            f"📊 پیشرفت قبلی: {last_index}/{total} اکانت\n\n"
+                            f"می‌خواهید از کجا ادامه دهید؟",
+                            buttons=buttons
+                        )
+                    else:
+                        # سناریو جدید
+                        await event.respond(
+                            f"📊 **انتخاب تعداد اکانت**\n\n"
+                            f"شما {len(active_accounts)} اکانت فعال دارید.\n\n"
+                            f"چند تا اکانت برای اجرای سناریو استفاده شود؟\n\n"
+                            f"💡 **گزینه‌ها:**\n"
+                            f"• عدد بفرست (مثلاً `5`) - از اول شروع میشه\n"
+                            f"• `/all` - همه اکانت‌ها\n"
+                            f"• `/from 70` - از اکانت 70 شروع کن\n"
+                            f"• `/from 70 to 100` - از 70 تا 100",
+                            buttons=Button.inline("❌ لغو", b"cancel")
+                        )
             
             elif step == 'scenario_count':
                 # دریافت تعداد اکانت
                 count_input = event.message.text.strip()
                 
                 active_accounts = state['active_accounts']
-                bot_username = state['bot_username']
-                scenario = state['scenario']
                 scenario_summary = state['scenario_summary']
+                is_multi_bot = state.get('multi_bot', False)
+                start_index = state.get('start_index', 0)  # شروع از کجا
+                resume_mode = state.get('resume_mode', False)
                 
                 # تعیین تعداد اکانت
                 if count_input.lower() == '/all':
-                    selected_accounts = active_accounts
+                    selected_accounts = active_accounts[start_index:]  # از start_index شروع کن
+                
+                elif count_input.lower().startswith('/from'):
+                    # پردازش دستورات /from
+                    parts = count_input.lower().split()
+                    
+                    try:
+                        if len(parts) == 2:
+                            # /from 70 - از 70 تا آخر
+                            start_num = int(parts[1])
+                            if start_num < 1 or start_num > len(active_accounts):
+                                await event.respond(
+                                    f"❌ شماره اکانت باید بین 1 تا {len(active_accounts)} باشد!",
+                                    buttons=Button.inline("❌ لغو", b"cancel")
+                                )
+                                return
+                            start_index = start_num - 1  # تبدیل به index (از 0 شروع میشه)
+                            selected_accounts = active_accounts[start_index:]
+                            resume_mode = True
+                            state['start_index'] = start_index
+                            state['resume_mode'] = True
+                        
+                        elif len(parts) == 4 and parts[2] == 'to':
+                            # /from 70 to 100 - از 70 تا 100
+                            start_num = int(parts[1])
+                            end_num = int(parts[3])
+                            
+                            if start_num < 1 or start_num > len(active_accounts):
+                                await event.respond(
+                                    f"❌ شماره شروع باید بین 1 تا {len(active_accounts)} باشد!",
+                                    buttons=Button.inline("❌ لغو", b"cancel")
+                                )
+                                return
+                            
+                            if end_num < start_num or end_num > len(active_accounts):
+                                await event.respond(
+                                    f"❌ شماره پایان باید بین {start_num} تا {len(active_accounts)} باشد!",
+                                    buttons=Button.inline("❌ لغو", b"cancel")
+                                )
+                                return
+                            
+                            start_index = start_num - 1
+                            end_index = end_num
+                            selected_accounts = active_accounts[start_index:end_index]
+                            resume_mode = True
+                            state['start_index'] = start_index
+                            state['resume_mode'] = True
+                        
+                        else:
+                            await event.respond(
+                                "❌ فرمت نامعتبر!\n\n"
+                                "فرمت‌های صحیح:\n"
+                                "• `/from 70` - از 70 تا آخر\n"
+                                "• `/from 70 to 100` - از 70 تا 100",
+                                buttons=Button.inline("❌ لغو", b"cancel")
+                            )
+                            return
+                    
+                    except ValueError:
+                        await event.respond(
+                            "❌ لطفاً اعداد معتبر وارد کنید!",
+                            buttons=Button.inline("❌ لغو", b"cancel")
+                        )
+                        return
+                
                 else:
                     try:
                         count = int(count_input)
@@ -2391,92 +2602,352 @@ class BotHandler:
                                 buttons=Button.inline("❌ لغو", b"cancel")
                             )
                             return
-                        selected_accounts = active_accounts[:min(count, len(active_accounts))]
+                        selected_accounts = active_accounts[start_index:start_index + count]  # از start_index شروع کن
                     except ValueError:
                         await event.respond(
-                            "❌ لطفاً یک عدد معتبر یا /all ارسال کنید.",
+                            "❌ لطفاً یک عدد معتبر یا دستور صحیح ارسال کنید.\n\n"
+                            "مثال‌ها:\n"
+                            "• `5` - 5 اکانت از اول\n"
+                            "• `/all` - همه اکانت‌ها\n"
+                            "• `/from 70` - از اکانت 70\n"
+                            "• `/from 70 to 100` - از 70 تا 100",
                             buttons=Button.inline("❌ لغو", b"cancel")
                         )
                         return
                 
+                # بررسی قفل سشن‌ها - فقط برای اطلاع‌رسانی
+                # قفل واقعی per-session در حین اجرا انجام می‌شه
+                session_paths = [acc.session_path for acc in selected_accounts]
                 total = len(selected_accounts)
+                scenario_text = state.get('scenario_text', '')
                 
-                # ایجاد flag برای لغو عملیات
-                cancel_flag = {'cancelled': False}
+                # ایجاد flag برای لغو و توقف عملیات
+                cancel_flag = {'cancelled': False, 'paused': False}
                 self.running_operations[user_id] = cancel_flag
                 
-                # ارسال پیام شروع با دکمه لغو
+                # ارسال پیام شروع با دکمه‌های کنترل
+                resume_text = f"▶️ ادامه از اکانت {start_index + 1}\n" if resume_mode else ""
                 progress_msg = await event.respond(
                     f"⏳ **شروع اجرای سناریو**\n\n"
                     f"{scenario_summary}\n"
+                    f"{resume_text}"
                     f"📊 تعداد اکانت‌ها: {total}\n"
                     f"⏱ تاخیر بین هر اکانت: {Config.DELAY_BETWEEN_ACTIONS}-{Config.DELAY_BETWEEN_ACTIONS + Config.DELAY_RANDOM_RANGE} ثانیه\n\n"
-                    f"لطفاً صبر کنید...",
-                    buttons=Button.inline("🛑 لغو عملیات", b"cancel_scenario")
-                )
-                
-                # تابع callback برای بروزرسانی پیشرفت
-                async def update_progress(current, total, message):
-                    try:
-                        await progress_msg.edit(
-                            f"⏳ **در حال اجرا...**\n\n"
-                            f"🤖 ربات: @{bot_username}\n"
-                            f"📊 پیشرفت: {current}/{total}\n"
-                            f"💬 {message}",
-                            buttons=Button.inline("🛑 لغو عملیات", b"cancel_scenario")
-                        )
-                    except:
-                        pass
-                
-                # اجرای دسته‌جمعی سناریو
-                session_paths = [acc.session_path for acc in selected_accounts]
-                results = await self.bot_automation.bulk_execute_scenario(
-                    session_paths,
-                    bot_username,
-                    scenario,
-                    progress_callback=update_progress,
-                    cancel_flag=cancel_flag
-                )
-                
-                # حذف flag عملیات
-                if user_id in self.running_operations:
-                    del self.running_operations[user_id]
-                
-                # نمایش نتایج
-                results_text = "📊 **نتایج اجرای سناریو:**\n\n"
-                results_text += f"🤖 ربات: @{bot_username}\n\n"
-                
-                for i, detail in enumerate(results['details'][:5], 1):  # نمایش 5 مورد اول
-                    phone_short = selected_accounts[i-1].phone[-4:] if selected_accounts[i-1].phone else "****"
-                    result = detail['result']
-                    
-                    if result['success']:
-                        results_text += f"✅ {phone_short}:\n"
-                        for step_result in result.get('executed_steps', [])[:3]:
-                            results_text += f"   {step_result}\n"
-                    else:
-                        results_text += f"❌ {phone_short}: {result['message'][:30]}\n"
-                    
-                    results_text += "\n"
-                
-                if len(results['details']) > 5:
-                    results_text += f"... و {len(results['details']) - 5} اکانت دیگر\n\n"
-                
-                results_text += f"✅ موفق: {results['success']}\n"
-                results_text += f"❌ ناموفق: {results['failed']}"
-                
-                if results.get('cancelled', 0) > 0:
-                    results_text += f"\n🛑 لغو شده: {results['cancelled']}"
-                
-                await progress_msg.edit(
-                    results_text,
+                    f"✅ **عملیات در پس‌زمینه شروع شد!**\n"
+                    f"💡 می‌توانید کارهای دیگر انجام دهید.",
                     buttons=[
-                        [Button.inline("🎯 سناریو جدید", b"advanced_scenario")],
-                        [Button.inline("🔙 منوی اصلی", b"back_to_menu")]
+                        [Button.inline("⏸ توقف موقت", b"pause_scenario")],
+                        [Button.inline("🛑 لغو کامل", b"cancel_scenario")]
                     ]
                 )
                 
-                await self.db.log_action('bulk_scenario', user_id, f"@{bot_username} - {results['success']}/{total}")
+                # تابع async برای اجرای در پس‌زمینه
+                async def run_scenario_background():
+                    used_sessions = set()
+                    
+                    try:
+                        # اجرای سناریو با قفل per-session
+                        results = {
+                            'success': 0,
+                            'failed': 0,
+                            'cancelled': 0,
+                            'details': []
+                        }
+                        
+                        total = len(selected_accounts)
+                        
+                        for index, account in enumerate(selected_accounts, 1):
+                            # بررسی لغو عملیات
+                            if cancel_flag.get('cancelled'):
+                                results['cancelled'] = total - index + 1
+                                break
+                            
+                            # بررسی توقف موقت
+                            while cancel_flag.get('paused'):
+                                await asyncio.sleep(1)
+                                # اگر در حین توقف، لغو شد
+                                if cancel_flag.get('cancelled'):
+                                    results['cancelled'] = total - index + 1
+                                    break
+                            
+                            # اگر لغو شده، از حلقه خارج شو
+                            if cancel_flag.get('cancelled'):
+                                break
+                            
+                            session_path = account.session_path
+                            
+                            # صبر تا سشن آزاد بشه (حداکثر 5 دقیقه)
+                            max_wait = 300
+                            wait_time = 0
+                            while session_path in self.session_locks and wait_time < max_wait:
+                                await asyncio.sleep(1)
+                                wait_time += 1
+                            
+                            # اگر هنوز قفله، skip کن
+                            if session_path in self.session_locks:
+                                results['failed'] += 1
+                                results['details'].append({
+                                    'session': Path(session_path).name,
+                                    'result': {
+                                        'success': False,
+                                        'message': 'سشن بعد از 5 دقیقه هنوز قفل بود'
+                                    }
+                                })
+                                continue
+                            
+                            # قفل کردن سشن
+                            self.session_locks.add(session_path)
+                            used_sessions.add(session_path)
+                            
+                            # بروزرسانی پیشرفت
+                            try:
+                                phone_short = account.phone[-4:] if account.phone else "****"
+                                if is_multi_bot:
+                                    await progress_msg.edit(
+                                        f"⏳ **در حال اجرا...**\n\n"
+                                        f"📊 پیشرفت: {index}/{total}\n"
+                                        f"💬 اکانت {phone_short}...",
+                                        buttons=[
+                                            [Button.inline("⏸ توقف موقت", b"pause_scenario")],
+                                            [Button.inline("🛑 لغو کامل", b"cancel_scenario")]
+                                        ]
+                                    )
+                                else:
+                                    bot_username = state['bot_username']
+                                    await progress_msg.edit(
+                                        f"⏳ **در حال اجرا...**\n\n"
+                                        f"🤖 ربات: @{bot_username}\n"
+                                        f"📊 پیشرفت: {index}/{total}\n"
+                                        f"💬 اکانت {phone_short}...",
+                                        buttons=[
+                                            [Button.inline("⏸ توقف موقت", b"pause_scenario")],
+                                            [Button.inline("🛑 لغو کامل", b"cancel_scenario")]
+                                        ]
+                                    )
+                            except:
+                                pass
+                            
+                            # اجرای سناریو
+                            try:
+                                if is_multi_bot:
+                                    bots_scenarios = state['bots_scenarios']
+                                    result = await self.bot_automation.execute_multi_bot_scenario(
+                                        session_path, bots_scenarios
+                                    )
+                                else:
+                                    bot_username = state['bot_username']
+                                    scenario = state['scenario']
+                                    result = await self.bot_automation.execute_scenario(
+                                        session_path, bot_username, scenario
+                                    )
+                                
+                                if result['success']:
+                                    results['success'] += 1
+                                else:
+                                    results['failed'] += 1
+                                
+                                results['details'].append({
+                                    'session': Path(session_path).name,
+                                    'result': result
+                                })
+                            
+                            finally:
+                                # آزاد کردن سشن بلافاصله بعد از استفاده
+                                self.session_locks.discard(session_path)
+                                used_sessions.discard(session_path)
+                                
+                                # ذخیره پیشرفت بعد از هر اکانت
+                                current_index = start_index + index
+                                total_accounts = len(active_accounts)
+                                await self.db.save_scenario_progress(
+                                    user_id, scenario_text, current_index, total_accounts
+                                )
+                            
+                            # تاخیر بین اکانت‌ها
+                            if index < total and not cancel_flag.get('cancelled'):
+                                delay = Config.DELAY_BETWEEN_ACTIONS + random.randint(0, Config.DELAY_RANDOM_RANGE)
+                                await asyncio.sleep(delay)
+                        
+                        # نمایش نتایج
+                        results_text = "📊 **نتایج اجرای سناریو:**\n\n"
+                        if is_multi_bot:
+                            bots_scenarios = state['bots_scenarios']
+                            results_text += f"🤖 تعداد رباتها: {len(bots_scenarios)}\n\n"
+                        else:
+                            bot_username = state['bot_username']
+                            results_text += f"🤖 ربات: @{bot_username}\n\n"
+                        
+                        # حذف flag عملیات
+                        if user_id in self.running_operations:
+                            del self.running_operations[user_id]
+                        
+                        # اگر سناریو کامل شد، پیشرفت رو پاک کن
+                        if not cancel_flag.get('cancelled') and (start_index + total) >= len(active_accounts):
+                            await self.db.delete_scenario_progress(user_id, scenario_text)
+                        
+                        # ساخت فایل گزارش کامل
+                        from datetime import datetime
+                        import io
+                        
+                        report_lines = []
+                        report_lines.append("=" * 60)
+                        report_lines.append("گزارش اجرای سناریو پیشرفته")
+                        report_lines.append("=" * 60)
+                        report_lines.append(f"تاریخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                        report_lines.append(f"کاربر: {user_id}")
+                        report_lines.append(f"تعداد اکانت‌ها: {total}")
+                        report_lines.append("")
+                        
+                        if is_multi_bot:
+                            report_lines.append(f"تعداد رباتها: {len(bots_scenarios)}")
+                            for bot_data in bots_scenarios:
+                                report_lines.append(f"  - @{bot_data['bot_username']}")
+                        else:
+                            report_lines.append(f"ربات: @{bot_username}")
+                        
+                        report_lines.append("")
+                        report_lines.append("=" * 60)
+                        report_lines.append("جزئیات اجرا برای هر اکانت")
+                        report_lines.append("=" * 60)
+                        report_lines.append("")
+                        
+                        # جزئیات هر اکانت
+                        for i, detail in enumerate(results['details'], 1):
+                            account = selected_accounts[i-1]
+                            phone = account.phone
+                            username = account.telegram_username or "ندارد"
+                            result = detail['result']
+                            
+                            report_lines.append(f"{'=' * 60}")
+                            report_lines.append(f"اکانت #{i}")
+                            report_lines.append(f"{'=' * 60}")
+                            report_lines.append(f"شماره: {phone}")
+                            report_lines.append(f"یوزرنیم: @{username}")
+                            report_lines.append(f"وضعیت کلی: {'✅ موفق' if result['success'] else '❌ ناموفق'}")
+                            report_lines.append("")
+                            
+                            if is_multi_bot:
+                                # چند ربات
+                                if 'results' in result:
+                                    for bot_result in result['results']:
+                                        bot_name = bot_result['bot']
+                                        bot_res = bot_result['result']
+                                        
+                                        report_lines.append(f"🤖 ربات: @{bot_name}")
+                                        report_lines.append(f"   وضعیت: {'✅ موفق' if bot_res['success'] else '❌ ناموفق'}")
+                                        
+                                        if 'executed_steps' in bot_res:
+                                            report_lines.append("   مراحل اجرا شده:")
+                                            for step in bot_res['executed_steps']:
+                                                report_lines.append(f"      {step}")
+                                        
+                                        if not bot_res['success']:
+                                            report_lines.append(f"   ❌ خطا: {bot_res.get('message', 'نامشخص')}")
+                                        
+                                        report_lines.append("")
+                            else:
+                                # یک ربات
+                                if 'executed_steps' in result:
+                                    report_lines.append("مراحل اجرا شده:")
+                                    for step in result['executed_steps']:
+                                        report_lines.append(f"   {step}")
+                                    report_lines.append("")
+                                
+                                if not result['success']:
+                                    report_lines.append(f"❌ خطا: {result.get('message', 'نامشخص')}")
+                                    report_lines.append("")
+                            
+                            report_lines.append("")
+                        
+                        # خلاصه نهایی
+                        report_lines.append("=" * 60)
+                        report_lines.append("خلاصه نتایج")
+                        report_lines.append("=" * 60)
+                        report_lines.append(f"✅ موفق: {results['success']}")
+                        report_lines.append(f"❌ ناموفق: {results['failed']}")
+                        if results.get('cancelled', 0) > 0:
+                            report_lines.append(f"🛑 لغو شده: {results['cancelled']}")
+                        report_lines.append("")
+                        report_lines.append("=" * 60)
+                        
+                        # ساخت فایل با نام یونیک (شامل user_id و timestamp)
+                        report_content = "\n".join(report_lines)
+                        report_file = io.BytesIO(report_content.encode('utf-8'))
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        report_file.name = f"scenario_report_user{user_id}_{timestamp}.txt"
+                        
+                        # نمایش خلاصه در پیام
+                        for i, detail in enumerate(results['details'][:5], 1):  # نمایش 5 مورد اول
+                            phone_short = selected_accounts[i-1].phone[-4:] if selected_accounts[i-1].phone else "****"
+                            result = detail['result']
+                            
+                            if result['success']:
+                                results_text += f"✅ {phone_short}:\n"
+                                if is_multi_bot and 'results' in result:
+                                    for bot_result in result['results'][:2]:
+                                        bot_name = bot_result['bot']
+                                        results_text += f"   @{bot_name}: {'✅' if bot_result['result']['success'] else '❌'}\n"
+                                else:
+                                    for step_result in result.get('executed_steps', [])[:3]:
+                                        results_text += f"   {step_result}\n"
+                            else:
+                                results_text += f"❌ {phone_short}: {result['message'][:30]}\n"
+                            
+                            results_text += "\n"
+                        
+                        if len(results['details']) > 5:
+                            results_text += f"... و {len(results['details']) - 5} اکانت دیگر\n\n"
+                        
+                        results_text += f"✅ موفق: {results['success']}\n"
+                        results_text += f"❌ ناموفق: {results['failed']}"
+                        
+                        if results.get('cancelled', 0) > 0:
+                            results_text += f"\n🛑 لغو شده: {results['cancelled']}"
+                        
+                        results_text += f"\n\n📄 **گزارش کامل در فایل ارسال شد**"
+                        
+                        await progress_msg.edit(
+                            results_text,
+                            buttons=[
+                                [Button.inline("🎯 سناریو جدید", b"advanced_scenario")],
+                                [Button.inline("🔙 منوی اصلی", b"back_to_menu")]
+                            ]
+                        )
+                        
+                        # ارسال فایل گزارش
+                        await self.bot.send_message(
+                            user_id,
+                            "📄 **گزارش کامل اجرای سناریو:**",
+                            file=report_file
+                        )
+                        
+                        if is_multi_bot:
+                            await self.db.log_action('bulk_multi_scenario', user_id, f"{len(bots_scenarios)} bots - {results['success']}/{total}")
+                        else:
+                            await self.db.log_action('bulk_scenario', user_id, f"@{bot_username} - {results['success']}/{total}")
+                    
+                    except Exception as e:
+                        logger.exception(f"خطا در اجرای سناریو پس‌زمینه: {e}")
+                        try:
+                            await progress_msg.edit(
+                                f"❌ **خطا در اجرای سناریو:**\n\n{str(e)[:200]}",
+                                buttons=Button.inline("🔙 منوی اصلی", b"back_to_menu")
+                            )
+                        except:
+                            pass
+                        
+                        # حذف flag عملیات
+                        if user_id in self.running_operations:
+                            del self.running_operations[user_id]
+                        
+                        # آزاد کردن سشن‌های باقی‌مانده (در صورت خطا)
+                        for session_path in used_sessions:
+                            self.session_locks.discard(session_path)
+                
+                # اجرای تسک در پس‌زمینه
+                asyncio.create_task(run_scenario_background())
+                
+                # پاک کردن state کاربر تا بتونه کار دیگه شروع کنه
                 del self.user_states[user_id]
         
         @self.bot.on(events.CallbackQuery(pattern=b"cancel_scenario"))
@@ -2494,6 +2965,54 @@ class BotHandler:
                     await event.edit(
                         event.message.text + "\n\n🛑 **درخواست لغو دریافت شد...**",
                         buttons=None
+                    )
+                except:
+                    pass
+            else:
+                await event.answer("⚠️ عملیاتی در حال اجرا نیست", alert=True)
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"pause_scenario"))
+        async def pause_scenario_callback(event):
+            """توقف موقت سناریو"""
+            user_id = event.sender_id
+            
+            if user_id in self.running_operations:
+                # تنظیم flag توقف
+                self.running_operations[user_id]['paused'] = True
+                await event.answer("⏸ سناریو متوقف شد", alert=True)
+                
+                # ویرایش پیام و تغییر دکمه
+                try:
+                    await event.edit(
+                        event.message.text.replace("⏳ **در حال اجرا...**", "⏸ **متوقف شده**"),
+                        buttons=[
+                            [Button.inline("▶️ ادامه", b"resume_scenario_run")],
+                            [Button.inline("🛑 لغو کامل", b"cancel_scenario")]
+                        ]
+                    )
+                except:
+                    pass
+            else:
+                await event.answer("⚠️ عملیاتی در حال اجرا نیست", alert=True)
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"resume_scenario_run"))
+        async def resume_scenario_run_callback(event):
+            """ادامه سناریو بعد از توقف"""
+            user_id = event.sender_id
+            
+            if user_id in self.running_operations:
+                # غیرفعال کردن flag توقف
+                self.running_operations[user_id]['paused'] = False
+                await event.answer("▶️ سناریو ادامه یافت", alert=True)
+                
+                # ویرایش پیام و تغییر دکمه
+                try:
+                    await event.edit(
+                        event.message.text.replace("⏸ **متوقف شده**", "⏳ **در حال اجرا...**"),
+                        buttons=[
+                            [Button.inline("⏸ توقف موقت", b"pause_scenario")],
+                            [Button.inline("🛑 لغو کامل", b"cancel_scenario")]
+                        ]
                     )
                 except:
                     pass
@@ -2667,53 +3186,134 @@ class BotHandler:
             
             await event.edit(
                 "🎯 **سناریو پیشرفته ربات**\n\n"
-                "با این قابلیت می‌توانید یک سناریو کامل برای تعامل با ربات‌ها تعریف کنید.\n\n"
-                "📝 **فرمت سناریو:**\n"
+                "با این قابلیت می‌توانید یک یا چند ربات را با سناریوهای مختلف اجرا کنید.\n\n"
+                "📝 **فرمت یک ربات:**\n"
                 "```\n"
                 "@bot_username\n"
                 "start: ref_id\n"
-                "send: متن پیام\n"
-                "click: کلمه کلیدی دکمه\n"
+                "send: متن\n"
                 "click: #0\n"
-                "join: لینک کانال\n"
-                "leave: لینک کانال\n"
-                "wait: 3\n"
-                "forward: 5, @mychannel\n"
+                "stop: 5\n"
+                "forward: 3, @channel\n"
                 "```\n\n"
-                "🎬 **مثال با فوروارد:**\n"
+                "📝 **فرمت چند ربات:**\n"
                 "```\n"
-                "@Startraygannetbot\n"
-                "start: AAAAACWiOtQ\n"
+                "@bot1\n"
+                "start: ref1\n"
+                "send: text1\n"
+                "\n"
+                "@bot2\n"
+                "start: ref2\n"
                 "click: #0\n"
-                "send: یوزرنیم: {random:8}\n"
-                "click: 1\n"
-                "forward: 3, @results_channel\n"
                 "```\n\n"
-                "📋 **دستورات موجود:**\n"
-                "• `start: ref_id` → استارت با رفرال\n"
-                "• `send: متن` → ارسال پیام به ربات\n"
-                "• `click: کلمه` → کلیک با جستجوی متن دکمه\n"
-                "• `click: #N` → کلیک دکمه شماره N (از 0 شروع)\n"
-                "• `join: لینک` → جوین کانال/گروه\n"
-                "• `leave: لینک` → لفت کانال/گروه\n"
-                "• `wait: ثانیه` → صبر کردن\n"
-                "• `forward: N, @target` → فوروارد N پیام آخر به کانال/گروه\n"
-                "• `#` → کامنت (نادیده گرفته می‌شود)\n\n"
-                "🔀 **متغیرهای دینامیک:**\n"
-                "• `{random:N}` → رشته تصادفی N حرفی (حروف کوچک + اعداد)\n"
-                "• `{random_upper:N}` → رشته تصادفی N حرفی (حروف بزرگ + اعداد)\n"
-                "• `{random_num:N}` → عدد تصادفی N رقمی\n\n"
+                "🎬 **مثال چند ربات:**\n"
+                "```\n"
+                "@PacketNetEmergencyBot\n"
+                "start: ref_123\n"
+                "join: https://t.me/PacketNet\n"
+                "click: عضو شدم\n"
+                "stop: 3\n"
+                "leave: https://t.me/PacketNet\n"
+                "\n"
+                "@NullVIPBot\n"
+                "start: ref_456\n"
+                "join: https://t.me/NullNetwork\n"
+                "send: /start\n"
+                "leave: https://t.me/NullNetwork\n"
+                "```\n\n"
+                "📋 **دستورات:**\n"
+                "• `start, send, click, join, leave, wait, stop, forward`\n"
+                "• متغیرها: `{random:N}, {random_upper:N}, {random_num:N}`\n"
+                "• کلیک: با متن یا شماره (`click: #0`)\n"
+                "• توقف: `stop: 5` (5 ثانیه توقف)\n\n"
                 "💡 **نکات:**\n"
-                "• خط اول باید یوزرنیم ربات باشه\n"
-                "• برای کلیک دکمه: از متن یا شماره استفاده کن\n"
-                "• شماره دکمه‌ها از 0 شروع می‌شه (0=اولین، 1=دومین، ...)\n"
-                "• forward معمولاً در آخر سناریو استفاده می‌شه\n"
-                "• متغیرها برای هر اکانت متفاوت تولید می‌شن\n"
-                "• بین مراحل 2 ثانیه صبر می‌کنه\n\n"
+                "• هر ربات با @ شروع می‌شود\n"
+                "• بین رباتها یک خط خالی بگذارید\n"
+                "• همه رباتها برای هر اکانت اجرا می‌شوند\n"
+                "• گزارش کامل در فایل .txt ارسال می‌شود\n\n"
                 "حالا سناریو خودت رو بفرست:",
                 buttons=Button.inline("❌ لغو", b"cancel")
             )
             self.user_states[event.sender_id] = {'step': 'scenario_input'}
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"resume_scenario"))
+        async def resume_scenario_callback(event):
+            """ادامه سناریو از جایی که متوقف شده"""
+            user_id = event.sender_id
+            
+            if user_id not in self.user_states:
+                await event.answer("❌ خطا! لطفاً دوباره تلاش کنید.", alert=True)
+                return
+            
+            await event.answer()
+            
+            state = self.user_states[user_id]
+            scenario_text = state.get('scenario_text')
+            
+            # دریافت پیشرفت
+            progress = await self.db.get_scenario_progress(user_id, scenario_text)
+            
+            if not progress:
+                await event.edit(
+                    "❌ پیشرفت قبلی پیدا نشد!",
+                    buttons=Button.inline("🔙 منوی اصلی", b"back_to_menu")
+                )
+                return
+            
+            # تنظیم start_index برای ادامه
+            state['start_index'] = progress['last_account_index']
+            state['resume_mode'] = True
+            
+            active_accounts = state['active_accounts']
+            remaining = len(active_accounts) - progress['last_account_index']
+            
+            await event.edit(
+                f"▶️ **ادامه سناریو**\n\n"
+                f"📊 از اکانت {progress['last_account_index'] + 1} ادامه می‌دهیم\n"
+                f"📈 باقی‌مانده: {remaining} اکانت\n\n"
+                f"چند تا اکانت برای ادامه استفاده شود؟\n\n"
+                f"💡 **گزینه‌ها:**\n"
+                f"• عدد بفرست (مثلاً `5`)\n"
+                f"• `/all` - همه باقی‌مانده ({remaining} اکانت)\n"
+                f"• `/from 80` - از اکانت 80 شروع کن\n"
+                f"• `/from 80 to 100` - از 80 تا 100",
+                buttons=Button.inline("❌ لغو", b"cancel")
+            )
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"restart_scenario"))
+        async def restart_scenario_callback(event):
+            """شروع سناریو از اول"""
+            user_id = event.sender_id
+            
+            if user_id not in self.user_states:
+                await event.answer("❌ خطا! لطفاً دوباره تلاش کنید.", alert=True)
+                return
+            
+            await event.answer()
+            
+            state = self.user_states[user_id]
+            scenario_text = state.get('scenario_text')
+            
+            # حذف پیشرفت قبلی
+            await self.db.delete_scenario_progress(user_id, scenario_text)
+            
+            # تنظیم برای شروع از اول
+            state['start_index'] = 0
+            state['resume_mode'] = False
+            
+            active_accounts = state['active_accounts']
+            
+            await event.edit(
+                f"🔄 **شروع از اول**\n\n"
+                f"📊 شما {len(active_accounts)} اکانت فعال دارید.\n\n"
+                f"چند تا اکانت برای اجرای سناریو استفاده شود؟\n\n"
+                f"💡 **گزینه‌ها:**\n"
+                f"• عدد بفرست (مثلاً `5`) - از اول شروع میشه\n"
+                f"• `/all` - همه اکانت‌ها\n"
+                f"• `/from 70` - از اکانت 70 شروع کن\n"
+                f"• `/from 70 to 100` - از 70 تا 100",
+                buttons=Button.inline("❌ لغو", b"cancel")
+            )
 
         @self.bot.on(events.NewMessage(func=lambda e: e.message.document and e.sender_id in Config.ADMIN_IDS))
         async def document_handler(event):
