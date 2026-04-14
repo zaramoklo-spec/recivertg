@@ -1,6 +1,7 @@
 """هندلر ربات تلگرام"""
 import logging
 import asyncio
+import random
 from datetime import datetime
 from pathlib import Path
 from telethon import TelegramClient, events
