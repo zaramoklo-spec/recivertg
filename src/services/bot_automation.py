@@ -254,6 +254,28 @@ class BotAutomation:
                         await asyncio.sleep(stop_time)
                         executed_steps.append(f"⏸ توقف {stop_time} ثانیه")
                     
+                    elif action == 'share_phone' or action == 'share_contact':
+                        # اشتراک‌گذاری شماره تماس با ربات
+                        # فرمت: share_phone: (بدون value - خودکار شماره اکانت رو میفرسته)
+                        try:
+                            # دریافت اطلاعات کاربر فعلی
+                            me = await client.get_me()
+                            
+                            # ارسال شماره تماس
+                            await client.send_message(
+                                bot,
+                                file=None,
+                                message='',
+                                contact=me.phone
+                            )
+                            
+                            executed_steps.append(f"✅ شماره تماس به اشتراک گذاشته شد: +{me.phone}")
+                            logger.info(f"شماره تماس +{me.phone} با ربات @{bot_username} به اشتراک گذاشته شد")
+                            
+                        except Exception as e:
+                            logger.error(f"خطا در اشتراک‌گذاری شماره: {e}")
+                            executed_steps.append(f"❌ خطا در اشتراک‌گذاری شماره: {str(e)[:30]}")
+                    
                     elif action == 'forward':
                         # فوروارد پیام‌های اخیر یا پیام خاص
                         # فرمت 1: forward: N, @target (N تا پیام آخر)
@@ -363,14 +385,14 @@ class BotAutomation:
                                     scenario: List[Dict], progress_callback=None, 
                                     cancel_flag: Optional[Dict] = None) -> Dict[str, any]:
         """
-        اجرای دسته‌جمعی سناریو با قابلیت لغو
+        اجرای دسته‌جمعی سناریو با قابلیت لغو و مکث
         
         Args:
             session_paths: لیست مسیر فایل‌های سشن
             bot_username: یوزرنیم ربات
             scenario: لیست مراحل سناریو
             progress_callback: تابع callback برای نمایش پیشرفت
-            cancel_flag: دیکشنری برای بررسی لغو عملیات
+            cancel_flag: دیکشنری برای بررسی لغو/مکث عملیات
             
         Returns:
             دیکشنری حاوی نتایج
@@ -390,6 +412,17 @@ class BotAutomation:
                 logger.info(f"عملیات توسط کاربر لغو شد در مرحله {index}/{total}")
                 results['cancelled'] = total - index + 1
                 break
+            
+            # بررسی مکث - صبر تا resume شود
+            while cancel_flag and cancel_flag.get('paused'):
+                logger.info(f"عملیات در حالت مکث است، صبر می‌کنیم...")
+                await asyncio.sleep(1)  # هر 1 ثانیه چک می‌کنیم
+                
+                # اگر در حین مکث لغو شد
+                if cancel_flag.get('cancelled'):
+                    logger.info(f"عملیات در حین مکث لغو شد")
+                    results['cancelled'] = total - index + 1
+                    return results
             
             # محاسبه تاخیر تصادفی
             delay = Config.DELAY_BETWEEN_ACTIONS + random.randint(0, Config.DELAY_RANDOM_RANGE)
@@ -564,13 +597,13 @@ class BotAutomation:
                                               progress_callback=None,
                                               cancel_flag: Optional[Dict] = None) -> Dict[str, any]:
         """
-        اجرای دسته‌جمعی سناریو چند ربات
+        اجرای دسته‌جمعی سناریو چند ربات با قابلیت لغو و مکث
         
         Args:
             session_paths: لیست مسیر فایل‌های سشن
             bots_scenarios: لیست ربات‌ها و سناریوهایشان
             progress_callback: تابع callback برای نمایش پیشرفت
-            cancel_flag: دیکشنری برای بررسی لغو عملیات
+            cancel_flag: دیکشنری برای بررسی لغو/مکث عملیات
             
         Returns:
             دیکشنری حاوی نتایج
@@ -590,6 +623,17 @@ class BotAutomation:
                 logger.info(f"عملیات توسط کاربر لغو شد در مرحله {index}/{total}")
                 results['cancelled'] = total - index + 1
                 break
+            
+            # بررسی مکث - صبر تا resume شود
+            while cancel_flag and cancel_flag.get('paused'):
+                logger.info(f"عملیات در حالت مکث است، صبر می‌کنیم...")
+                await asyncio.sleep(1)  # هر 1 ثانیه چک می‌کنیم
+                
+                # اگر در حین مکث لغو شد
+                if cancel_flag.get('cancelled'):
+                    logger.info(f"عملیات در حین مکث لغو شد")
+                    results['cancelled'] = total - index + 1
+                    return results
             
             # محاسبه تاخیر تصادفی
             delay = Config.DELAY_BETWEEN_ACTIONS + random.randint(0, Config.DELAY_RANDOM_RANGE)

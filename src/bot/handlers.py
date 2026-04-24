@@ -976,7 +976,7 @@ class BotHandler:
         
         @self.bot.on(events.CallbackQuery(pattern=b"react_post"))
         async def react_post_callback(event):
-            """شروع فرآیند ری‌اکشن و سین"""
+            """منوی ری‌اکشن و سین"""
             # بررسی دسترسی ادمین
             if not await self._check_admin_access(event):
                 return
@@ -995,6 +995,25 @@ class BotHandler:
             
             await event.edit(
                 "❤️ **ری‌اکشن و سین زدن پست**\n\n"
+                "چه کاری میخواهید انجام دهید؟",
+                buttons=[
+                    [Button.inline("❤️ ری‌اکشن + سین", b"do_react_and_view")],
+                    [Button.inline("👁 فقط سین", b"do_view_only")],
+                    [Button.inline("🔙 بازگشت", b"back_to_menu")]
+                ]
+            )
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"do_react_and_view"))
+        async def do_react_and_view_callback(event):
+            """شروع فرآیند ری‌اکشن و سین"""
+            # بررسی دسترسی ادمین
+            if not await self._check_admin_access(event):
+                return
+            
+            await event.answer()
+            
+            await event.edit(
+                "❤️ **ری‌اکشن و سین زدن پست**\n\n"
                 "لینک پست کانال را ارسال کنید:\n\n"
                 "✅ فرمت: https://t.me/channel/123\n"
                 "✅ یا: https://t.me/c/1234567890/123\n\n"
@@ -1007,6 +1026,30 @@ class BotHandler:
                 buttons=Button.inline("❌ لغو", b"cancel")
             )
             self.user_states[event.sender_id] = {'step': 'react_link'}
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"do_view_only"))
+        async def do_view_only_callback(event):
+            """شروع فرآیند فقط سین"""
+            # بررسی دسترسی ادمین
+            if not await self._check_admin_access(event):
+                return
+            
+            await event.answer()
+            
+            await event.edit(
+                "👁 **فقط سین زدن پست**\n\n"
+                "لینک پست کانال را ارسال کنید:\n\n"
+                "✅ فرمت: https://t.me/channel/123\n"
+                "✅ یا: https://t.me/c/1234567890/123\n\n"
+                "💡 **نکات:**\n"
+                "• فقط سین (view) پست زده می‌شود\n"
+                "• هیچ ری‌اکشنی ارسال نمی‌شود\n"
+                "• همه اکانت‌ها این کار را انجام می‌دهند\n\n"
+                "مثال:\n"
+                "https://t.me/mychannel/456",
+                buttons=Button.inline("❌ لغو", b"cancel")
+            )
+            self.user_states[event.sender_id] = {'step': 'view_only_link'}
         
         @self.bot.on(events.CallbackQuery(pattern=b"block_user"))
         async def block_user_callback(event):
@@ -1189,13 +1232,15 @@ class BotHandler:
                 "**💬 ارسال پیام:**\n"
                 "یوزرنیم/آیدی → متن پیام → ارسال خودکار\n\n"
                 "**❤️ ری‌اکشن و سین:**\n"
-                "لینک پست → ری‌اکشن و سین خودکار\n\n"
+                "• ری‌اکشن + سین: لینک پست → ری‌اکشن تصادفی + سین\n"
+                "• فقط سین: لینک پست → فقط سین (بدون ری‌اکشن)\n\n"
                 "**🚫 بلاک/انبلاک:**\n"
                 "یوزرنیم/آیدی → بلاک یا انبلاک خودکار\n\n"
                 "**🎯 سناریو پیشرفته:**\n"
                 "سناریوی کامل برای تعامل با ربات‌ها\n"
-                "• دستورات: start, send, click, join, leave, wait, stop, forward\n"
+                "• دستورات: start, send, click, share_phone, join, leave, wait, stop, forward\n"
                 "• کلیک دکمه: با متن یا شماره (click: #0, click: 1)\n"
+                "• اشتراک شماره: share_phone: (خودکار شماره اکانت رو میفرسته)\n"
                 "• توقف موقت: stop: 5 (5 ثانیه توقف)\n"
                 "• فوروارد نتایج: forward: 5, @mychannel\n"
                 "• متغیرهای دینامیک: {random:N}, {random_upper:N}, {random_num:N}\n"
@@ -2174,6 +2219,153 @@ class BotHandler:
                 )
                 
                 await self.db.log_action('bulk_reaction', user_id, f"{channel_link}/{message_id} - {results['success']}/{total}")
+                del self.user_states[user_id]
+            
+            elif step == 'view_only_link':
+                # دریافت لینک پست برای فقط سین
+                post_link = event.message.text.strip()
+                
+                # تجزیه لینک پست
+                try:
+                    # فرمت: https://t.me/channel/123 یا https://t.me/c/1234567890/123
+                    if '/c/' in post_link:
+                        # لینک خصوصی
+                        parts = post_link.split('/')
+                        channel_id = int('-100' + parts[-2])
+                        message_id = int(parts[-1])
+                        channel_link = str(channel_id)
+                    else:
+                        # لینک عمومی
+                        parts = post_link.split('/')
+                        channel_link = parts[-2]
+                        message_id = int(parts[-1])
+                    
+                    # دریافت اکانت‌های کاربر
+                    accounts = await self.db.get_accounts(user_id)
+                    active_accounts = [acc for acc in accounts if acc.status == 'active' and acc.session_path]
+                    
+                    if not active_accounts:
+                        await event.respond(
+                            "❌ شما اکانت فعالی ندارید.",
+                            buttons=Button.inline("🔙 منوی اصلی", b"back_to_menu")
+                        )
+                        del self.user_states[user_id]
+                        return
+                    
+                    # ذخیره اطلاعات و پرسیدن تعداد اکانت
+                    state['channel_link'] = channel_link
+                    state['message_id'] = message_id
+                    state['active_accounts'] = active_accounts
+                    state['step'] = 'view_only_count'
+                    
+                    await event.respond(
+                        f"📊 **انتخاب تعداد اکانت**\n\n"
+                        f"شما {len(active_accounts)} اکانت فعال دارید.\n\n"
+                        f"چند تا اکانت برای سین استفاده شود؟\n\n"
+                        f"💡 عدد ارسال کنید (مثلاً 5) یا:\n"
+                        f"• /all برای همه اکانت‌ها",
+                        buttons=Button.inline("❌ لغو", b"cancel")
+                    )
+                    
+                except (ValueError, IndexError) as e:
+                    await event.respond(
+                        "❌ لینک نامعتبر است!\n\n"
+                        "لطفاً لینک را به فرمت صحیح ارسال کنید:\n"
+                        "https://t.me/channel/123",
+                        buttons=Button.inline("❌ لغو", b"cancel")
+                    )
+            
+            elif step == 'view_only_count':
+                # دریافت تعداد اکانت برای فقط سین
+                count_input = event.message.text.strip()
+                
+                active_accounts = state['active_accounts']
+                channel_link = state['channel_link']
+                message_id = state['message_id']
+                
+                # تعیین تعداد اکانت
+                if count_input.lower() == '/all':
+                    selected_accounts = active_accounts
+                else:
+                    try:
+                        count = int(count_input)
+                        if count <= 0:
+                            await event.respond(
+                                "❌ تعداد باید بیشتر از صفر باشد!",
+                                buttons=Button.inline("❌ لغو", b"cancel")
+                            )
+                            return
+                        selected_accounts = active_accounts[:min(count, len(active_accounts))]
+                    except ValueError:
+                        await event.respond(
+                            "❌ لطفاً یک عدد معتبر یا /all ارسال کنید.",
+                            buttons=Button.inline("❌ لغو", b"cancel")
+                        )
+                        return
+                
+                total = len(selected_accounts)
+                
+                # ارسال پیام شروع
+                progress_msg = await event.respond(
+                    f"⏳ **شروع عملیات سین**\n\n"
+                    f"📢 کانال: {channel_link}\n"
+                    f"📨 پست: {message_id}\n"
+                    f"📊 تعداد اکانت‌ها: {total}\n"
+                    f"👁 فقط سین (بدون ری‌اکشن)\n"
+                    f"⏱ تاخیر بین هر عملیات: {Config.DELAY_BETWEEN_ACTIONS}-{Config.DELAY_BETWEEN_ACTIONS + Config.DELAY_RANDOM_RANGE} ثانیه\n\n"
+                    f"لطفاً صبر کنید..."
+                )
+                
+                # تابع callback برای بروزرسانی پیشرفت
+                async def update_progress(current, total, message):
+                    try:
+                        await progress_msg.edit(
+                            f"⏳ **در حال سین زدن...**\n\n"
+                            f"📢 کانال: {channel_link}\n"
+                            f"📊 پیشرفت: {current}/{total}\n"
+                            f"💬 {message}"
+                        )
+                    except:
+                        pass
+                
+                # سین دسته‌جمعی (بدون ری‌اکشن)
+                session_paths = [acc.session_path for acc in selected_accounts]
+                results = await self.reaction_manager.bulk_view_only(
+                    session_paths,
+                    channel_link,
+                    message_id,
+                    progress_callback=update_progress
+                )
+                
+                # نمایش نتایج
+                results_text = "📊 **نتایج سین:**\n\n"
+                results_text += f"📢 کانال: {channel_link}\n"
+                results_text += f"📨 پست: {message_id}\n\n"
+                
+                for i, detail in enumerate(results['details'][:10], 1):
+                    phone_short = selected_accounts[i-1].phone[-4:] if selected_accounts[i-1].phone else "****"
+                    result = detail['result']
+                    
+                    if result['success']:
+                        results_text += f"✅ {phone_short}: سین زده شد\n"
+                    else:
+                        results_text += f"❌ {phone_short}: {result['message'][:30]}\n"
+                
+                if len(results['details']) > 10:
+                    results_text += f"\n... و {len(results['details']) - 10} مورد دیگر\n"
+                
+                results_text += f"\n✅ موفق: {results['success']}\n"
+                results_text += f"❌ ناموفق: {results['failed']}"
+                
+                await progress_msg.edit(
+                    results_text,
+                    buttons=[
+                        [Button.inline("👁 سین مجدد", b"react_post")],
+                        [Button.inline("🔙 منوی اصلی", b"back_to_menu")]
+                    ]
+                )
+                
+                await self.db.log_action('bulk_view_only', user_id, f"{channel_link}/{message_id} - {results['success']}/{total}")
                 del self.user_states[user_id]
             
             elif step == 'block_target':
@@ -3295,6 +3487,7 @@ class BotHandler:
                 "start: ref_id\n"
                 "send: متن\n"
                 "click: #0\n"
+                "share_phone:\n"
                 "stop: 5\n"
                 "forward: \"لینک\", @channel\n"
                 "```\n\n"
@@ -3314,6 +3507,7 @@ class BotHandler:
                 "start: ref_123\n"
                 "join: https://t.me/PacketNet\n"
                 "click: عضو شدم\n"
+                "share_phone:\n"
                 "stop: 3\n"
                 "leave: https://t.me/PacketNet\n"
                 "\n"
@@ -3321,12 +3515,14 @@ class BotHandler:
                 "start: ref_456\n"
                 "join: https://t.me/NullNetwork\n"
                 "send: /start\n"
+                "share_phone:\n"
                 "leave: https://t.me/NullNetwork\n"
                 "```\n\n"
                 "📋 **دستورات:**\n"
-                "• `start, send, click, join, leave, wait, stop, forward`\n"
+                "• `start, send, click, share_phone, join, leave, wait, stop, forward`\n"
                 "• متغیرها: `{random:N}, {random_upper:N}, {random_num:N}`\n"
                 "• کلیک: با متن یا شماره (`click: #0`)\n"
+                "• اشتراک شماره: `share_phone:` (خودکار شماره اکانت رو میفرسته)\n"
                 "• توقف: `stop: 5` (5 ثانیه توقف)\n"
                 "• فوروارد: `forward: 3, @ch` یا `forward: \"متن\", @ch`\n\n"
                 "🎯 **انتخاب اکانت‌ها:**\n"
