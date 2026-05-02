@@ -254,6 +254,116 @@ class BotAutomation:
                         await asyncio.sleep(stop_time)
                         executed_steps.append(f"⏸ توقف {stop_time} ثانیه")
                     
+                    elif action == 'solve_captcha':
+                        # حل خودکار کپچای ریاضی
+                        # فرمت: solve_captcha: send (ارسال جواب به صورت متن)
+                        # یا: solve_captcha: click (کلیک روی دکمه با جواب)
+                        try:
+                            mode = value.strip().lower() if value else 'send'
+                            
+                            # صبر کوتاه برای اطمینان از دریافت پیام کپچا
+                            await asyncio.sleep(1)
+                            
+                            # دریافت آخرین پیام ربات
+                            messages = await client.get_messages(bot, limit=1)
+                            
+                            if not messages or not messages[0].text:
+                                executed_steps.append(f"⚠️ پیامی برای حل کپچا پیدا نشد")
+                                continue
+                            
+                            last_message = messages[0].text
+                            logger.info(f"پیام کپچا: {last_message}")
+                            
+                            # الگوهای مختلف معادلات ریاضی
+                            patterns = [
+                                r'(\d+)\s*\+\s*(\d+)\s*=\s*\?',  # 5 + 3 = ?
+                                r'(\d+)\s*-\s*(\d+)\s*=\s*\?',   # 81 - 4 = ?
+                                r'(\d+)\s*×\s*(\d+)\s*=\s*\?',   # 5 × 3 = ?
+                                r'(\d+)\s*\*\s*(\d+)\s*=\s*\?',  # 5 * 3 = ?
+                                r'(\d+)\s*÷\s*(\d+)\s*=\s*\?',   # 10 ÷ 2 = ?
+                                r'(\d+)\s*/\s*(\d+)\s*=\s*\?',   # 10 / 2 = ?
+                                r'(\d+)\s*\+\s*(\d+)',            # 5 + 3
+                                r'(\d+)\s*-\s*(\d+)',             # 81 - 4
+                                r'(\d+)\s*×\s*(\d+)',             # 5 × 3
+                                r'(\d+)\s*\*\s*(\d+)',            # 5 * 3
+                                r'(\d+)\s*÷\s*(\d+)',             # 10 ÷ 2
+                                r'(\d+)\s*/\s*(\d+)',             # 10 / 2
+                            ]
+                            
+                            answer = None
+                            operation = None
+                            
+                            # جستجوی معادله در متن
+                            for pattern in patterns:
+                                match = re.search(pattern, last_message)
+                                if match:
+                                    num1 = int(match.group(1))
+                                    num2 = int(match.group(2))
+                                    
+                                    # تشخیص نوع عملیات
+                                    if '+' in match.group(0):
+                                        answer = num1 + num2
+                                        operation = f"{num1} + {num2}"
+                                    elif '-' in match.group(0):
+                                        answer = num1 - num2
+                                        operation = f"{num1} - {num2}"
+                                    elif '×' in match.group(0) or '*' in match.group(0):
+                                        answer = num1 * num2
+                                        operation = f"{num1} × {num2}"
+                                    elif '÷' in match.group(0) or '/' in match.group(0):
+                                        if num2 != 0:
+                                            answer = num1 // num2  # تقسیم صحیح
+                                            operation = f"{num1} ÷ {num2}"
+                                    
+                                    break
+                            
+                            if answer is None:
+                                executed_steps.append(f"⚠️ معادله ریاضی در پیام پیدا نشد")
+                                logger.warning(f"معادله پیدا نشد در: {last_message}")
+                                continue
+                            
+                            logger.info(f"معادله حل شد: {operation} = {answer}")
+                            
+                            # ارسال جواب بر اساس mode
+                            if mode == 'send':
+                                # ارسال جواب به صورت متن
+                                await client.send_message(bot, str(answer))
+                                executed_steps.append(f"✅ کپچا حل شد: {operation} = {answer} (ارسال شد)")
+                            
+                            elif mode == 'click':
+                                # کلیک روی دکمه با جواب
+                                messages = await client.get_messages(bot, limit=1)
+                                
+                                if messages and messages[0].buttons:
+                                    button_found = False
+                                    answer_str = str(answer)
+                                    
+                                    for row in messages[0].buttons:
+                                        for button in row:
+                                            button_text = button.text if hasattr(button, 'text') else str(button)
+                                            
+                                            # جستجوی جواب در متن دکمه
+                                            if answer_str in button_text or button_text.strip() == answer_str:
+                                                await button.click()
+                                                button_found = True
+                                                executed_steps.append(f"✅ کپچا حل شد: {operation} = {answer} (کلیک شد)")
+                                                break
+                                        
+                                        if button_found:
+                                            break
+                                    
+                                    if not button_found:
+                                        executed_steps.append(f"⚠️ دکمه با جواب '{answer}' پیدا نشد")
+                                else:
+                                    executed_steps.append(f"⚠️ دکمه‌ای برای کلیک وجود ندارد")
+                            
+                            else:
+                                executed_steps.append(f"❌ mode نامعتبر: {mode} (باید send یا click باشد)")
+                        
+                        except Exception as e:
+                            logger.error(f"خطا در حل کپچا: {e}")
+                            executed_steps.append(f"❌ خطا در حل کپچا: {str(e)[:30]}")
+                    
                     elif action == 'share_phone' or action == 'share_contact':
                         # اشتراک‌گذاری شماره تماس با ربات
                         # فرمت: share_phone: (بدون value - خودکار شماره اکانت رو میفرسته)
