@@ -268,11 +268,15 @@ class BotAutomation:
                             messages = await client.get_messages(bot, limit=1)
                             
                             if not messages or not messages[0].text:
-                                executed_steps.append(f"⚠️ پیامی برای حل کپچا پیدا نشد")
+                                executed_steps.append(f"⚠️ کپچا: پیامی برای حل پیدا نشد")
+                                logger.warning("پیام کپچا پیدا نشد")
                                 continue
                             
                             last_message = messages[0].text
+                            # نمایش بخشی از پیام در گزارش
+                            message_preview = last_message[:100].replace('\n', ' ')
                             logger.info(f"پیام کپچا: {last_message}")
+                            executed_steps.append(f"🔍 کپچا دریافت شد: {message_preview}...")
                             
                             # الگوهای مختلف معادلات ریاضی
                             patterns = [
@@ -318,17 +322,19 @@ class BotAutomation:
                                     break
                             
                             if answer is None:
-                                executed_steps.append(f"⚠️ معادله ریاضی در پیام پیدا نشد")
+                                executed_steps.append(f"⚠️ کپچا: معادله ریاضی پیدا نشد در پیام")
+                                executed_steps.append(f"   📝 متن پیام: {message_preview}...")
                                 logger.warning(f"معادله پیدا نشد در: {last_message}")
                                 continue
                             
                             logger.info(f"معادله حل شد: {operation} = {answer}")
+                            executed_steps.append(f"🧮 معادله پیدا شد: {operation} = {answer}")
                             
                             # ارسال جواب بر اساس mode
                             if mode == 'send':
                                 # ارسال جواب به صورت متن
                                 await client.send_message(bot, str(answer))
-                                executed_steps.append(f"✅ کپچا حل شد: {operation} = {answer} (ارسال شد)")
+                                executed_steps.append(f"✅ کپچا حل شد و ارسال شد: {answer}")
                             
                             elif mode == 'click':
                                 # کلیک روی دکمه با جواب
@@ -338,27 +344,32 @@ class BotAutomation:
                                     button_found = False
                                     answer_str = str(answer)
                                     
+                                    # لیست دکمه‌ها برای گزارش
+                                    all_buttons_text = []
+                                    
                                     for row in messages[0].buttons:
                                         for button in row:
                                             button_text = button.text if hasattr(button, 'text') else str(button)
+                                            all_buttons_text.append(button_text)
                                             
                                             # جستجوی جواب در متن دکمه
                                             if answer_str in button_text or button_text.strip() == answer_str:
                                                 await button.click()
                                                 button_found = True
-                                                executed_steps.append(f"✅ کپچا حل شد: {operation} = {answer} (کلیک شد)")
+                                                executed_steps.append(f"✅ کپچا حل شد و کلیک شد: دکمه '{button_text}'")
                                                 break
                                         
                                         if button_found:
                                             break
                                     
                                     if not button_found:
-                                        executed_steps.append(f"⚠️ دکمه با جواب '{answer}' پیدا نشد")
+                                        executed_steps.append(f"⚠️ کپچا: دکمه با جواب '{answer}' پیدا نشد")
+                                        executed_steps.append(f"   🔘 دکمه‌های موجود: {', '.join(all_buttons_text)}")
                                 else:
-                                    executed_steps.append(f"⚠️ دکمه‌ای برای کلیک وجود ندارد")
+                                    executed_steps.append(f"⚠️ کپچا: دکمه‌ای برای کلیک وجود ندارد")
                             
                             else:
-                                executed_steps.append(f"❌ mode نامعتبر: {mode} (باید send یا click باشد)")
+                                executed_steps.append(f"❌ کپچا: mode نامعتبر '{mode}' (باید send یا click باشد)")
                         
                         except Exception as e:
                             logger.error(f"خطا در حل کپچا: {e}")
