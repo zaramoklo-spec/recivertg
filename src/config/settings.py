@@ -12,7 +12,7 @@ class Config:
     # تنظیمات API تلگرام
     API_ID: int = int(os.getenv('API_ID', '5099517'))
     API_HASH: str = os.getenv('API_HASH', '3bffbb2ff1f15e5812fbeb8ab22d0f66')
-    BOT_TOKEN: str = os.getenv('BOT_TOKEN', '5426399552:AAFlosePCqsJhYEfI9U1lWLhCIUYHhCuZ0o')
+    BOT_TOKEN: str = os.getenv('BOT_TOKEN', '8713131015:AAFKaDlp77QFswAk6-9yP1yqOl7n_EVq3mM')
     
     # ادمین‌های ربات
     ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '631388884').split(',') if x.strip()]
