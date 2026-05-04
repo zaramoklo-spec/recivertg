@@ -258,25 +258,81 @@ class BotAutomation:
                         # حل خودکار کپچای ریاضی
                         # فرمت: solve_captcha: send (ارسال جواب به صورت متن)
                         # یا: solve_captcha: click (کلیک روی دکمه با جواب)
+                        # یا: solve_captcha: send, 3 (بررسی 3 پیام آخر)
                         try:
-                            mode = value.strip().lower() if value else 'send'
+                            # تجزیه value برای دریافت mode و limit
+                            mode = 'send'
+                            message_limit = 1
+                            
+                            if value:
+                                parts = [p.strip() for p in value.split(',')]
+                                mode = parts[0].lower() if parts[0] else 'send'
+                                
+                                # اگر پارامتر دوم وجود داشت، تعداد پیام‌ها
+                                if len(parts) > 1 and parts[1].isdigit():
+                                    message_limit = int(parts[1])
+                                    message_limit = min(message_limit, 10)  # حداکثر 10 پیام
                             
                             # صبر کوتاه برای اطمینان از دریافت پیام کپچا
                             await asyncio.sleep(1)
                             
-                            # دریافت آخرین پیام ربات
-                            messages = await client.get_messages(bot, limit=1)
+                            # دریافت چند پیام آخر ربات
+                            messages = await client.get_messages(bot, limit=message_limit)
                             
-                            if not messages or not messages[0].text:
+                            if not messages:
                                 executed_steps.append(f"⚠️ کپچا: پیامی برای حل پیدا نشد")
                                 logger.warning("پیام کپچا پیدا نشد")
                                 continue
                             
-                            last_message = messages[0].text
+                            # جستجوی معادله در پیام‌ها
+                            found_message = None
+                            found_index = -1
+                            
+                            for idx, msg in enumerate(messages):
+                                if msg.text:
+                                    # الگوهای مختلف معادلات ریاضی
+                                    patterns = [
+                                        r'(\d+)\s*\+\s*(\d+)\s*=\s*\?',  # 5 + 3 = ?
+                                        r'(\d+)\s*-\s*(\d+)\s*=\s*\?',   # 81 - 4 = ?
+                                        r'(\d+)\s*×\s*(\d+)\s*=\s*\?',   # 5 × 3 = ?
+                                        r'(\d+)\s*\*\s*(\d+)\s*=\s*\?',  # 5 * 3 = ?
+                                        r'(\d+)\s*÷\s*(\d+)\s*=\s*\?',   # 10 ÷ 2 = ?
+                                        r'(\d+)\s*/\s*(\d+)\s*=\s*\?',   # 10 / 2 = ?
+                                        r'(\d+)\s*\+\s*(\d+)',            # 5 + 3
+                                        r'(\d+)\s*-\s*(\d+)',             # 81 - 4
+                                        r'(\d+)\s*×\s*(\d+)',             # 5 × 3
+                                        r'(\d+)\s*\*\s*(\d+)',            # 5 * 3
+                                        r'(\d+)\s*÷\s*(\d+)',             # 10 ÷ 2
+                                        r'(\d+)\s*/\s*(\d+)',             # 10 / 2
+                                    ]
+                                    
+                                    # چک کردن هر الگو
+                                    for pattern in patterns:
+                                        if re.search(pattern, msg.text):
+                                            found_message = msg.text
+                                            found_index = idx
+                                            break
+                                    
+                                    if found_message:
+                                        break
+                            
+                            if not found_message:
+                                executed_steps.append(f"⚠️ کپچا: معادله در {message_limit} پیام آخر پیدا نشد")
+                                logger.warning(f"معادله در {message_limit} پیام پیدا نشد")
+                                continue
+                            
                             # نمایش بخشی از پیام در گزارش
-                            message_preview = last_message[:100].replace('\n', ' ')
-                            logger.info(f"پیام کپچا: {last_message}")
-                            executed_steps.append(f"🔍 کپچا دریافت شد: {message_preview}...")
+                            message_preview = found_message[:100].replace('\n', ' ')
+                            logger.info(f"پیام کپچا (پیام #{found_index + 1}): {found_message}")
+                            
+                            if message_limit > 1:
+                                executed_steps.append(f"🔍 کپچا در پیام #{found_index + 1} از {message_limit} پیام: {message_preview}...")
+                            else:
+                                executed_steps.append(f"🔍 کپچا دریافت شد: {message_preview}...")
+                            
+                            # حالا معادله رو حل می‌کنیم
+                            answer = None
+                            operation = None
                             
                             # الگوهای مختلف معادلات ریاضی
                             patterns = [
@@ -294,12 +350,9 @@ class BotAutomation:
                                 r'(\d+)\s*/\s*(\d+)',             # 10 / 2
                             ]
                             
-                            answer = None
-                            operation = None
-                            
-                            # جستجوی معادله در متن
+                            # جستجوی معادله و حل آن
                             for pattern in patterns:
-                                match = re.search(pattern, last_message)
+                                match = re.search(pattern, found_message)
                                 if match:
                                     num1 = int(match.group(1))
                                     num2 = int(match.group(2))
@@ -324,7 +377,7 @@ class BotAutomation:
                             if answer is None:
                                 executed_steps.append(f"⚠️ کپچا: معادله ریاضی پیدا نشد در پیام")
                                 executed_steps.append(f"   📝 متن پیام: {message_preview}...")
-                                logger.warning(f"معادله پیدا نشد در: {last_message}")
+                                logger.warning(f"معادله پیدا نشد در: {found_message}")
                                 continue
                             
                             logger.info(f"معادله حل شد: {operation} = {answer}")

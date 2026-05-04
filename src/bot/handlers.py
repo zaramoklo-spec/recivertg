@@ -8,7 +8,7 @@ from telethon import TelegramClient, events
 from telethon.tl.custom import Button
 
 from src.config import Config
-from src.services import AccountReceiver, ChannelManager, ReferralManager, MessageSender, BotAutomation, BackupManager, ReactionManager, BlockManager
+from src.services import AccountReceiver, ChannelManager, ReferralManager, MessageSender, BotAutomation, BackupManager, ReactionManager, BlockManager, NoteManager
 from src.models import AccountCredentials
 from src.database import Database, User, Account
 from src.utils.validators import extract_telegram_code
@@ -34,6 +34,7 @@ class BotHandler:
         self.reaction_manager = ReactionManager()
         self.block_manager = BlockManager()
         self.db = Database(Config.DATABASE_PATH)
+        self.note_manager = NoteManager(self.db)
         
         # ذخیره وضعیت کاربران
         self.user_states = {}
@@ -277,6 +278,7 @@ class BotHandler:
                     [Button.inline("❤️ ری‌اکشن و سین", b"react_post"),
                      Button.inline("🚫 بلاک/انبلاک", b"block_user")],
                     [Button.inline("🎯 سناریو پیشرفته", b"advanced_scenario")],
+                    [Button.inline("📝 یادداشت‌های من", b"my_notes")],
                     [Button.inline("⚙️ مدیریت ربات", b"bot_management")],
                     [Button.inline("👑 پنل ادمین", b"admin_panel")]
                 ]
@@ -308,6 +310,7 @@ class BotHandler:
                     [Button.inline("❤️ ری‌اکشن و سین", b"react_post"),
                      Button.inline("🚫 بلاک/انبلاک", b"block_user")],
                     [Button.inline("🎯 سناریو پیشرفته", b"advanced_scenario")],
+                    [Button.inline("📝 یادداشت‌های من", b"my_notes")],
                     [Button.inline("⚙️ مدیریت ربات", b"bot_management")]
                 ]
                 
@@ -323,7 +326,8 @@ class BotHandler:
                     "💬 **ارسال پیام** - ارسال پیام به کاربر\n"
                     "❤️ **ری‌اکشن و سین** - ری‌اکشن و سین زدن پست‌ها\n"
                     "🚫 **بلاک/انبلاک** - بلاک یا انبلاک کردن کاربر\n"
-                    "🎯 **سناریو پیشرفته** - اجرای سناریوهای پیچیده\n\n"
+                    "🎯 **سناریو پیشرفته** - اجرای سناریوهای پیچیده\n"
+                    "📝 **یادداشت‌ها** - ثبت یادداشت برای رباتها\n\n"
                     "از منوی زیر استفاده کنید:"
                 )
             else:
@@ -1240,7 +1244,7 @@ class BotHandler:
                 "سناریوی کامل برای تعامل با ربات‌ها\n"
                 "• دستورات: start, send, click, solve_captcha, share_phone, join, leave, wait, stop, forward\n"
                 "• کلیک دکمه: با متن یا شماره (click: #0, click: 1)\n"
-                "• حل کپچا: solve_captcha: send یا solve_captcha: click\n"
+                "• حل کپچا: solve_captcha: send یا solve_captcha: click یا solve_captcha: send, 3\n"
                 "• اشتراک شماره: share_phone: (خودکار شماره اکانت رو میفرسته)\n"
                 "• توقف موقت: stop: 5 (5 ثانیه توقف)\n"
                 "• فوروارد نتایج: forward: 5, @mychannel\n"
@@ -2550,6 +2554,119 @@ class BotHandler:
                         buttons=Button.inline("❌ لغو", b"admin_panel")
                     )
             
+            elif step == 'waiting_note_single':
+                # دریافت متن یادداشت برای تک ربات
+                note_text = event.message.text.strip()
+                bot_username = state['bot_username']
+                scenario_text = state.get('scenario_text')
+                
+                # ذخیره یادداشت
+                success = await self.note_manager.add_note(
+                    user_id, bot_username, note_text, scenario_text
+                )
+                
+                if success:
+                    await event.respond(
+                        f"✅ **یادداشت ذخیره شد!**\n\n"
+                        f"🤖 ربات: @{bot_username}\n"
+                        f"📝 یادداشت: {note_text[:100]}{'...' if len(note_text) > 100 else ''}\n\n"
+                        f"💡 برای مشاهده یادداشت‌ها: `/notes @{bot_username}`",
+                        buttons=[
+                            [Button.inline("🎯 سناریو جدید", b"advanced_scenario")],
+                            [Button.inline("📝 یادداشت‌های من", b"my_notes")],
+                            [Button.inline("🔙 منوی اصلی", b"back_to_menu")]
+                        ]
+                    )
+                    await self.db.log_action('add_note', user_id, f"@{bot_username}")
+                else:
+                    await event.respond(
+                        "❌ خطا در ذخیره یادداشت!",
+                        buttons=Button.inline("🔙 منوی اصلی", b"back_to_menu")
+                    )
+                
+                del self.user_states[user_id]
+            
+            elif step == 'waiting_note_multi':
+                # دریافت متن یادداشت برای چند ربات
+                note_text = event.message.text.strip()
+                bots_scenarios = state['bots_scenarios']
+                current_index = state['current_bot_index']
+                bot_username = bots_scenarios[current_index]['bot_username']
+                scenario_text = state.get('scenario_text')
+                
+                # ذخیره یادداشت
+                success = await self.note_manager.add_note(
+                    user_id, bot_username, note_text, scenario_text
+                )
+                
+                if success:
+                    await event.respond(
+                        f"✅ **یادداشت ذخیره شد!**\n\n"
+                        f"🤖 ربات: @{bot_username}\n"
+                        f"📝 یادداشت: {note_text[:100]}{'...' if len(note_text) > 100 else ''}"
+                    )
+                    await self.db.log_action('add_note', user_id, f"@{bot_username}")
+                else:
+                    await event.respond("❌ خطا در ذخیره یادداشت!")
+                
+                # رفتن به ربات بعدی
+                next_index = current_index + 1
+                
+                if next_index < len(bots_scenarios):
+                    # ربات بعدی وجود دارد
+                    state['current_bot_index'] = next_index
+                    state['step'] = 'ask_note_multi'
+                    next_bot = bots_scenarios[next_index]['bot_username']
+                    
+                    await event.respond(
+                        f"📝 **یادداشت برای ربات @{next_bot}**\n\n"
+                        f"آیا می‌خواهید یادداشتی برای این ربات ثبت کنید؟",
+                        buttons=[
+                            [Button.inline("✅ بله، یادداشت می‌زنم", b"note_yes")],
+                            [Button.inline("⏭ بعدی", b"note_skip")],
+                            [Button.inline("❌ نه، برای هیچکدام", b"note_no_all")]
+                        ]
+                    )
+                else:
+                    # تمام رباتها تمام شدند
+                    del self.user_states[user_id]
+                    
+                    await event.respond(
+                        "✅ **تمام شد!**\n\n"
+                        "سناریو با موفقیت اجرا شد و یادداشت‌ها ذخیره شدند.",
+                        buttons=[
+                            [Button.inline("🎯 سناریو جدید", b"advanced_scenario")],
+                            [Button.inline("📝 یادداشت‌های من", b"my_notes")],
+                            [Button.inline("🔙 منوی اصلی", b"back_to_menu")]
+                        ]
+                    )
+            
+            elif step == 'edit_note':
+                # دریافت متن جدید یادداشت
+                note_text = event.message.text.strip()
+                note_id = state['note_id']
+                
+                # ویرایش یادداشت
+                success = await self.note_manager.update_note(note_id, user_id, note_text)
+                
+                if success:
+                    await event.respond(
+                        f"✅ **یادداشت ویرایش شد!**\n\n"
+                        f"📝 متن جدید: {note_text[:100]}{'...' if len(note_text) > 100 else ''}",
+                        buttons=[
+                            [Button.inline("📝 یادداشت‌های من", b"my_notes")],
+                            [Button.inline("🔙 منوی اصلی", b"back_to_menu")]
+                        ]
+                    )
+                    await self.db.log_action('edit_note', user_id, str(note_id))
+                else:
+                    await event.respond(
+                        "❌ خطا در ویرایش یادداشت! شاید این یادداشت متعلق به شما نباشد.",
+                        buttons=Button.inline("🔙 منوی اصلی", b"back_to_menu")
+                    )
+                
+                del self.user_states[user_id]
+            
             elif step == 'scenario_input':
                 # دریافت سناریو
                 scenario_text = event.message.text.strip()
@@ -3216,6 +3333,47 @@ class BotHandler:
                             file=report_file
                         )
                         
+                        # سوال یادداشت برای رباتها
+                        if is_multi_bot:
+                            # ذخیره اطلاعات برای یادداشت
+                            self.user_states[user_id] = {
+                                'step': 'ask_note_multi',
+                                'bots_scenarios': bots_scenarios,
+                                'scenario_text': scenario_text,
+                                'current_bot_index': 0
+                            }
+                            
+                            first_bot = bots_scenarios[0]['bot_username']
+                            await self.bot.send_message(
+                                user_id,
+                                f"📝 **یادداشت برای ربات @{first_bot}**\n\n"
+                                f"آیا می‌خواهید یادداشتی برای این ربات ثبت کنید؟\n\n"
+                                f"💡 یادداشت‌ها به شما کمک می‌کنند تا اطلاعات مهم درباره هر ربات را ذخیره کنید.",
+                                buttons=[
+                                    [Button.inline("✅ بله، یادداشت می‌زنم", b"note_yes")],
+                                    [Button.inline("⏭ بعدی", b"note_skip")],
+                                    [Button.inline("❌ نه، برای هیچکدام", b"note_no_all")]
+                                ]
+                            )
+                        else:
+                            # یک ربات
+                            self.user_states[user_id] = {
+                                'step': 'ask_note_single',
+                                'bot_username': bot_username,
+                                'scenario_text': scenario_text
+                            }
+                            
+                            await self.bot.send_message(
+                                user_id,
+                                f"📝 **یادداشت برای ربات @{bot_username}**\n\n"
+                                f"آیا می‌خواهید یادداشتی برای این ربات ثبت کنید؟\n\n"
+                                f"💡 یادداشت‌ها به شما کمک می‌کنند تا اطلاعات مهم درباره ربات را ذخیره کنید.",
+                                buttons=[
+                                    [Button.inline("✅ بله، یادداشت می‌زنم", b"note_yes")],
+                                    [Button.inline("❌ نه، نیازی نیست", b"note_no")]
+                                ]
+                            )
+                        
                         if is_multi_bot:
                             await self.db.log_action('bulk_multi_scenario', user_id, f"{len(bots_scenarios)} bots - {results['success']}/{total}")
                         else:
@@ -3526,7 +3684,7 @@ class BotHandler:
                 "• `start, send, click, solve_captcha, share_phone, join, leave, wait, stop, forward`\n"
                 "• متغیرها: `{random:N}, {random_upper:N}, {random_num:N}`\n"
                 "• کلیک: با متن یا شماره (`click: #0`)\n"
-                "• حل کپچا: `solve_captcha: send` یا `solve_captcha: click`\n"
+                "• حل کپچا: `solve_captcha: send` یا `solve_captcha: click` یا `solve_captcha: send, 3` (بررسی 3 پیام آخر)\n"
                 "• اشتراک شماره: `share_phone:` (خودکار شماره اکانت رو میفرسته)\n"
                 "• توقف: `stop: 5` (5 ثانیه توقف)\n"
                 "• فوروارد: `forward: 3, @ch` یا `forward: \"متن\", @ch`\n\n"
@@ -3726,3 +3884,363 @@ class BotHandler:
                         buttons=Button.inline("🔙 پنل ادمین", b"admin_panel")
                     )
                     del self.user_states[user_id]
+
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"my_notes"))
+        async def my_notes_callback(event):
+            """نمایش یادداشت‌های کاربر"""
+            # بررسی دسترسی ادمین
+            if not await self._check_admin_access(event):
+                return
+            
+            await event.answer()
+            
+            user_id = event.sender_id
+            notes = await self.note_manager.get_user_notes(user_id)
+            
+            if not notes:
+                await event.edit(
+                    "📝 **یادداشت‌های من**\n\n"
+                    "❌ شما هنوز یادداشتی ثبت نکرده‌اید.\n\n"
+                    "💡 بعد از اجرای سناریوها، می‌توانید یادداشت ثبت کنید.",
+                    buttons=Button.inline("🔙 بازگشت", b"back_to_menu")
+                )
+                return
+            
+            # گروه‌بندی یادداشت‌ها بر اساس ربات
+            bots_notes = {}
+            for note in notes:
+                bot = note['bot_username']
+                if bot not in bots_notes:
+                    bots_notes[bot] = []
+                bots_notes[bot].append(note)
+            
+            text = "📝 **یادداشت‌های من**\n\n"
+            text += f"📊 تعداد کل: {len(notes)} یادداشت\n"
+            text += f"🤖 تعداد رباتها: {len(bots_notes)}\n\n"
+            
+            # نمایش یادداشت‌ها
+            for bot_username, bot_notes in list(bots_notes.items())[:10]:
+                text += f"🤖 **@{bot_username}** ({len(bot_notes)} یادداشت)\n"
+                for note in bot_notes[:2]:
+                    note_preview = note['note_text'][:50]
+                    if len(note['note_text']) > 50:
+                        note_preview += "..."
+                    text += f"   • {note_preview}\n"
+                    text += f"     📅 {note['created_at'][:10]}\n"
+                if len(bot_notes) > 2:
+                    text += f"   ... و {len(bot_notes) - 2} یادداشت دیگر\n"
+                text += "\n"
+            
+            if len(bots_notes) > 10:
+                text += f"... و {len(bots_notes) - 10} ربات دیگر\n\n"
+            
+            text += "💡 برای مشاهده یادداشت‌های یک ربات خاص:\n"
+            text += "`/notes @bot_username`"
+            
+            await event.edit(
+                text,
+                buttons=[
+                    [Button.inline("🗑 حذف یادداشت", b"delete_note_menu")],
+                    [Button.inline("🔙 بازگشت", b"back_to_menu")]
+                ]
+            )
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"note_yes"))
+        async def note_yes_callback(event):
+            """کاربر می‌خواهد یادداشت بزند"""
+            await event.answer()
+            
+            user_id = event.sender_id
+            
+            if user_id not in self.user_states:
+                await event.edit(
+                    "❌ خطا! لطفاً دوباره تلاش کنید.",
+                    buttons=Button.inline("🔙 منوی اصلی", b"back_to_menu")
+                )
+                return
+            
+            state = self.user_states[user_id]
+            step = state.get('step')
+            
+            if step == 'ask_note_single':
+                bot_username = state['bot_username']
+                state['step'] = 'waiting_note_single'
+                
+                await event.edit(
+                    f"📝 **یادداشت برای @{bot_username}**\n\n"
+                    f"لطفاً یادداشت خود را ارسال کنید:\n\n"
+                    f"💡 می‌توانید اطلاعاتی مثل:\n"
+                    f"• لینک رفرال\n"
+                    f"• نکات مهم\n"
+                    f"• تنظیمات خاص\n"
+                    f"• نتایج قبلی\n\n"
+                    f"را ثبت کنید.",
+                    buttons=Button.inline("❌ لغو", b"note_no")
+                )
+            
+            elif step == 'ask_note_multi':
+                bots_scenarios = state['bots_scenarios']
+                current_index = state['current_bot_index']
+                bot_username = bots_scenarios[current_index]['bot_username']
+                state['step'] = 'waiting_note_multi'
+                
+                await event.edit(
+                    f"📝 **یادداشت برای @{bot_username}**\n\n"
+                    f"لطفاً یادداشت خود را ارسال کنید:\n\n"
+                    f"💡 می‌توانید اطلاعاتی مثل:\n"
+                    f"• لینک رفرال\n"
+                    f"• نکات مهم\n"
+                    f"• تنظیمات خاص\n"
+                    f"• نتایج قبلی\n\n"
+                    f"را ثبت کنید.",
+                    buttons=Button.inline("❌ لغو", b"note_skip")
+                )
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"note_no"))
+        async def note_no_callback(event):
+            """کاربر نمی‌خواهد یادداشت بزند (تک ربات)"""
+            await event.answer()
+            
+            user_id = event.sender_id
+            
+            if user_id in self.user_states:
+                del self.user_states[user_id]
+            
+            await event.edit(
+                "✅ **تمام شد!**\n\n"
+                "سناریو با موفقیت اجرا شد.",
+                buttons=[
+                    [Button.inline("🎯 سناریو جدید", b"advanced_scenario")],
+                    [Button.inline("🔙 منوی اصلی", b"back_to_menu")]
+                ]
+            )
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"note_skip"))
+        async def note_skip_callback(event):
+            """رد کردن یادداشت فعلی و رفتن به بعدی (چند ربات)"""
+            await event.answer()
+            
+            user_id = event.sender_id
+            
+            if user_id not in self.user_states:
+                await event.edit(
+                    "❌ خطا! لطفاً دوباره تلاش کنید.",
+                    buttons=Button.inline("🔙 منوی اصلی", b"back_to_menu")
+                )
+                return
+            
+            state = self.user_states[user_id]
+            bots_scenarios = state.get('bots_scenarios', [])
+            current_index = state.get('current_bot_index', 0)
+            
+            # رفتن به ربات بعدی
+            next_index = current_index + 1
+            
+            if next_index < len(bots_scenarios):
+                # ربات بعدی وجود دارد
+                state['current_bot_index'] = next_index
+                state['step'] = 'ask_note_multi'
+                next_bot = bots_scenarios[next_index]['bot_username']
+                
+                await event.edit(
+                    f"📝 **یادداشت برای ربات @{next_bot}**\n\n"
+                    f"آیا می‌خواهید یادداشتی برای این ربات ثبت کنید؟\n\n"
+                    f"💡 یادداشت‌ها به شما کمک می‌کنند تا اطلاعات مهم درباره هر ربات را ذخیره کنید.",
+                    buttons=[
+                        [Button.inline("✅ بله، یادداشت می‌زنم", b"note_yes")],
+                        [Button.inline("⏭ بعدی", b"note_skip")],
+                        [Button.inline("❌ نه، برای هیچکدام", b"note_no_all")]
+                    ]
+                )
+            else:
+                # تمام رباتها تمام شدند
+                del self.user_states[user_id]
+                
+                await event.edit(
+                    "✅ **تمام شد!**\n\n"
+                    "سناریو با موفقیت اجرا شد.",
+                    buttons=[
+                        [Button.inline("🎯 سناریو جدید", b"advanced_scenario")],
+                        [Button.inline("🔙 منوی اصلی", b"back_to_menu")]
+                    ]
+                )
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"note_no_all"))
+        async def note_no_all_callback(event):
+            """کاربر نمی‌خواهد برای هیچ رباتی یادداشت بزند"""
+            await event.answer()
+            
+            user_id = event.sender_id
+            
+            if user_id in self.user_states:
+                del self.user_states[user_id]
+            
+            await event.edit(
+                "✅ **تمام شد!**\n\n"
+                "سناریو با موفقیت اجرا شد.",
+                buttons=[
+                    [Button.inline("🎯 سناریو جدید", b"advanced_scenario")],
+                    [Button.inline("🔙 منوی اصلی", b"back_to_menu")]
+                ]
+            )
+        
+        @self.bot.on(events.CallbackQuery(pattern=b"delete_note_menu"))
+        async def delete_note_menu_callback(event):
+            """منوی حذف یادداشت"""
+            # بررسی دسترسی ادمین
+            if not await self._check_admin_access(event):
+                return
+            
+            await event.answer()
+            
+            await event.edit(
+                "🗑 **حذف یادداشت**\n\n"
+                "برای حذف یادداشت، از دستور زیر استفاده کنید:\n\n"
+                "`/deletenote NOTE_ID`\n\n"
+                "💡 برای مشاهده ID یادداشت‌ها:\n"
+                "`/notes @bot_username`",
+                buttons=Button.inline("🔙 بازگشت", b"my_notes")
+            )
+        
+        @self.bot.on(events.NewMessage(pattern='/notes'))
+        async def notes_command_handler(event):
+            """نمایش یادداشت‌های یک ربات خاص"""
+            # بررسی دسترسی ادمین
+            user_id = event.sender_id
+            is_creator = user_id in Config.ADMIN_IDS
+            is_admin = await self.db.is_admin(user_id)
+            
+            if not is_creator and not is_admin:
+                await event.respond("⛔️ این قابلیت فقط برای ادمین‌ها در دسترس است!")
+                return
+            
+            try:
+                # دریافت یوزرنیم ربات
+                parts = event.message.text.split()
+                if len(parts) < 2:
+                    await event.respond(
+                        "❌ فرمت نادرست!\n\n"
+                        "استفاده: `/notes @bot_username`\n"
+                        "مثال: `/notes @MyBot`"
+                    )
+                    return
+                
+                bot_username = parts[1].lstrip('@')
+                
+                # دریافت یادداشت‌های ربات
+                notes = await self.note_manager.get_bot_notes(user_id, bot_username)
+                
+                if not notes:
+                    await event.respond(
+                        f"📝 **یادداشت‌های @{bot_username}**\n\n"
+                        f"❌ شما برای این ربات یادداشتی ثبت نکرده‌اید."
+                    )
+                    return
+                
+                text = f"📝 **یادداشت‌های @{bot_username}**\n\n"
+                text += f"📊 تعداد: {len(notes)} یادداشت\n\n"
+                
+                for i, note in enumerate(notes, 1):
+                    text += f"{'=' * 40}\n"
+                    text += f"📌 **یادداشت #{i}** (ID: `{note['id']}`)\n"
+                    text += f"📅 تاریخ: {note['created_at'][:16]}\n"
+                    if note['updated_at'] != note['created_at']:
+                        text += f"✏️ ویرایش: {note['updated_at'][:16]}\n"
+                    text += f"\n{note['note_text']}\n\n"
+                
+                text += f"{'=' * 40}\n\n"
+                text += "💡 **دستورات:**\n"
+                text += "• حذف: `/deletenote NOTE_ID`\n"
+                text += "• ویرایش: `/editnote NOTE_ID`"
+                
+                await event.respond(text)
+                
+            except Exception as e:
+                logger.exception(f"خطا در نمایش یادداشت‌ها: {e}")
+                await event.respond(f"❌ خطا: {str(e)}")
+        
+        @self.bot.on(events.NewMessage(pattern='/deletenote'))
+        async def delete_note_command_handler(event):
+            """حذف یادداشت"""
+            # بررسی دسترسی ادمین
+            user_id = event.sender_id
+            is_creator = user_id in Config.ADMIN_IDS
+            is_admin = await self.db.is_admin(user_id)
+            
+            if not is_creator and not is_admin:
+                await event.respond("⛔️ این قابلیت فقط برای ادمین‌ها در دسترس است!")
+                return
+            
+            try:
+                # دریافت ID یادداشت
+                parts = event.message.text.split()
+                if len(parts) < 2:
+                    await event.respond(
+                        "❌ فرمت نادرست!\n\n"
+                        "استفاده: `/deletenote NOTE_ID`\n"
+                        "مثال: `/deletenote 5`"
+                    )
+                    return
+                
+                note_id = int(parts[1])
+                
+                # حذف یادداشت
+                success = await self.note_manager.delete_note(note_id, user_id)
+                
+                if success:
+                    await event.respond(
+                        f"✅ **یادداشت حذف شد!**\n\n"
+                        f"🗑 یادداشت با ID `{note_id}` حذف شد."
+                    )
+                    await self.db.log_action('delete_note', user_id, str(note_id))
+                else:
+                    await event.respond("❌ خطا در حذف یادداشت! شاید این یادداشت متعلق به شما نباشد.")
+                    
+            except ValueError:
+                await event.respond("❌ ID نامعتبر است! لطفاً یک عدد صحیح وارد کنید.")
+            except Exception as e:
+                await event.respond(f"❌ خطا: {str(e)}")
+        
+        @self.bot.on(events.NewMessage(pattern='/editnote'))
+        async def edit_note_command_handler(event):
+            """ویرایش یادداشت"""
+            # بررسی دسترسی ادمین
+            user_id = event.sender_id
+            is_creator = user_id in Config.ADMIN_IDS
+            is_admin = await self.db.is_admin(user_id)
+            
+            if not is_creator and not is_admin:
+                await event.respond("⛔️ این قابلیت فقط برای ادمین‌ها در دسترس است!")
+                return
+            
+            try:
+                # دریافت ID یادداشت
+                parts = event.message.text.split(maxsplit=1)
+                if len(parts) < 2:
+                    await event.respond(
+                        "❌ فرمت نادرست!\n\n"
+                        "استفاده: `/editnote NOTE_ID`\n"
+                        "مثال: `/editnote 5`\n\n"
+                        "سپس متن جدید را ارسال کنید."
+                    )
+                    return
+                
+                note_id = int(parts[1])
+                
+                # ذخیره state برای دریافت متن جدید
+                self.user_states[user_id] = {
+                    'step': 'edit_note',
+                    'note_id': note_id
+                }
+                
+                await event.respond(
+                    f"✏️ **ویرایش یادداشت #{note_id}**\n\n"
+                    f"لطفاً متن جدید یادداشت را ارسال کنید:",
+                    buttons=Button.inline("❌ لغو", b"cancel")
+                )
+                    
+            except ValueError:
+                await event.respond("❌ ID نامعتبر است! لطفاً یک عدد صحیح وارد کنید.")
+            except Exception as e:
+                await event.respond(f"❌ خطا: {str(e)}")

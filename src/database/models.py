@@ -112,6 +112,20 @@ class Database:
                 )
             """)
             
+            # جدول یادداشت‌های ربات
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    bot_username TEXT NOT NULL,
+                    note_text TEXT NOT NULL,
+                    scenario_text TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            """)
+            
             await db.commit()
             
             # Migration: اضافه کردن ستون added_by اگر وجود نداره
@@ -437,3 +451,79 @@ class Database:
         except Exception as e:
             print(f"خطا در دریافت پیشرفت‌های سناریو: {e}")
             return []
+    
+    async def add_bot_note(self, user_id: int, bot_username: str, note_text: str, 
+                          scenario_text: Optional[str] = None) -> bool:
+        """افزودن یادداشت برای ربات"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    INSERT INTO bot_notes (user_id, bot_username, note_text, scenario_text)
+                    VALUES (?, ?, ?, ?)
+                """, (user_id, bot_username, note_text, scenario_text))
+                await db.commit()
+                return True
+        except Exception as e:
+            print(f"خطا در افزودن یادداشت: {e}")
+            return False
+    
+    async def get_user_notes(self, user_id: int) -> List[Dict[str, Any]]:
+        """دریافت همه یادداشت‌های یک کاربر"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("""
+                    SELECT * FROM bot_notes 
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC
+                """, (user_id,)) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+        except Exception as e:
+            print(f"خطا در دریافت یادداشت‌ها: {e}")
+            return []
+    
+    async def get_bot_notes(self, user_id: int, bot_username: str) -> List[Dict[str, Any]]:
+        """دریافت یادداشت‌های یک ربات خاص"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("""
+                    SELECT * FROM bot_notes 
+                    WHERE user_id = ? AND bot_username = ?
+                    ORDER BY created_at DESC
+                """, (user_id, bot_username)) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+        except Exception as e:
+            print(f"خطا در دریافت یادداشت‌های ربات: {e}")
+            return []
+    
+    async def delete_note(self, note_id: int, user_id: int) -> bool:
+        """حذف یادداشت"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    DELETE FROM bot_notes 
+                    WHERE id = ? AND user_id = ?
+                """, (note_id, user_id))
+                await db.commit()
+                return True
+        except Exception as e:
+            print(f"خطا در حذف یادداشت: {e}")
+            return False
+    
+    async def update_note(self, note_id: int, user_id: int, note_text: str) -> bool:
+        """ویرایش یادداشت"""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    UPDATE bot_notes 
+                    SET note_text = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND user_id = ?
+                """, (note_text, note_id, user_id))
+                await db.commit()
+                return True
+        except Exception as e:
+            print(f"خطا در ویرایش یادداشت: {e}")
+            return False

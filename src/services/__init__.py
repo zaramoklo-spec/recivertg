@@ -7,5 +7,6 @@ from .bot_automation import BotAutomation
 from .backup_manager import BackupManager
 from .reaction_manager import ReactionManager
 from .block_manager import BlockManager
+from .note_manager import NoteManager
 
-__all__ = ['AccountReceiver', 'ChannelManager', 'ReferralManager', 'MessageSender', 'BotAutomation', 'BackupManager', 'ReactionManager', 'BlockManager']
+__all__ = ['AccountReceiver', 'ChannelManager', 'ReferralManager', 'MessageSender', 'BotAutomation', 'BackupManager', 'ReactionManager', 'BlockManager', 'NoteManager']
