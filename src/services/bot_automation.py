@@ -678,15 +678,23 @@ class BotAutomation:
         start: ref2
         send: text2
         
+        فرمت رفرال چندگانه:
+        @bot1
+        start: ref1 | 20
+        start: ref2 | 30
+        start: ref3 | 50
+        send: text1
+        
         Args:
             scenario_text: متن سناریو
             
         Returns:
-            لیست دیکشنری‌ها با bot_username و scenario
+            لیست دیکشنری‌ها با bot_username و scenario و referral_distribution
         """
         bots = []
         current_bot = None
         current_scenario = []
+        referral_codes = []  # لیست کدهای رفرال با تعداد موفق مورد نیاز
         
         lines = scenario_text.strip().split('\n')
         
@@ -703,18 +711,41 @@ class BotAutomation:
                 if current_bot and current_scenario:
                     bots.append({
                         'bot_username': current_bot,
-                        'scenario': current_scenario
+                        'scenario': current_scenario,
+                        'referral_codes': referral_codes if referral_codes else None
                     })
                 
                 # شروع ربات جدید
                 current_bot = line.lstrip('@')
                 current_scenario = []
+                referral_codes = []
             
             # دستورات سناریو
             elif ':' in line and current_bot:
                 action, value = line.split(':', 1)
                 action = action.strip().lower()
                 value = value.strip()
+                
+                # بررسی اینکه آیا start با تقسیم‌بندی رفرال است
+                if action == 'start' and '|' in value:
+                    # فرمت: ref_code | count
+                    parts = value.split('|')
+                    ref_code = parts[0].strip()
+                    try:
+                        target_count = int(parts[1].strip())
+                        referral_codes.append({
+                            'code': ref_code,
+                            'target_count': target_count,
+                            'success_count': 0,
+                            'failed_count': 0,
+                            'accounts_used': []
+                        })
+                        # اگر رفرال چندگانه است، start رو به سناریو اضافه نمی‌کنیم
+                        # چون بعداً دینامیک اضافه می‌شه
+                        continue
+                    except ValueError:
+                        # اگر فرمت اشتباه بود، به صورت عادی اضافه کن
+                        pass
                 
                 current_scenario.append({
                     'action': action,
@@ -726,19 +757,22 @@ class BotAutomation:
         if current_bot and current_scenario:
             bots.append({
                 'bot_username': current_bot,
-                'scenario': current_scenario
+                'scenario': current_scenario,
+                'referral_codes': referral_codes if referral_codes else None
             })
         
         return bots
     
     async def execute_multi_bot_scenario(self, session_path: str, 
-                                         bots_scenarios: List[Dict]) -> Dict[str, any]:
+                                         bots_scenarios: List[Dict],
+                                         referral_stats: Optional[Dict] = None) -> Dict[str, any]:
         """
         اجرای سناریو چند ربات
         
         Args:
             session_path: مسیر فایل سشن
             bots_scenarios: لیست ربات‌ها و سناریوهایشان
+            referral_stats: آمار رفرال‌ها (برای رفرال چندگانه)
             
         Returns:
             دیکشنری حاوی نتایج
@@ -747,14 +781,54 @@ class BotAutomation:
         
         for bot_data in bots_scenarios:
             bot_username = bot_data['bot_username']
-            scenario = bot_data['scenario']
+            scenario = bot_data['scenario'].copy()  # کپی برای تغییر
+            referral_codes = bot_data.get('referral_codes')
+            
+            # اگر رفرال چندگانه داریم
+            if referral_codes and referral_stats:
+                # پیدا کردن اولین رفرالی که هنوز به هدف نرسیده
+                current_ref = None
+                for ref in referral_codes:
+                    ref_key = f"{bot_username}_{ref['code']}"
+                    if ref_key in referral_stats:
+                        stats = referral_stats[ref_key]
+                        if stats['success_count'] < stats['target_count']:
+                            current_ref = ref['code']
+                            break
+                
+                if current_ref:
+                    # اضافه کردن start به ابتدای سناریو
+                    scenario.insert(0, {
+                        'action': 'start',
+                        'value': current_ref,
+                        'delay': 2
+                    })
+                else:
+                    # همه رفرال‌ها کامل شدند، از اولین استفاده کن
+                    scenario.insert(0, {
+                        'action': 'start',
+                        'value': referral_codes[0]['code'],
+                        'delay': 2
+                    })
             
             logger.info(f"اجرای سناریو برای ربات @{bot_username}")
             
             result = await self.execute_scenario(session_path, bot_username, scenario)
+            
+            # اگر رفرال چندگانه داریم، آمار رو آپدیت کن
+            if referral_codes and referral_stats and current_ref:
+                ref_key = f"{bot_username}_{current_ref}"
+                if ref_key in referral_stats:
+                    if result['success']:
+                        referral_stats[ref_key]['success_count'] += 1
+                    else:
+                        referral_stats[ref_key]['failed_count'] += 1
+                    referral_stats[ref_key]['accounts_used'].append(Path(session_path).name)
+            
             all_results.append({
                 'bot': bot_username,
-                'result': result
+                'result': result,
+                'referral_code': current_ref if referral_codes else None
             })
             
             # تاخیر بین رباتها
@@ -765,6 +839,116 @@ class BotAutomation:
             'message': f"اجرای {len(all_results)} ربات",
             'results': all_results
         }
+    
+    async def bulk_execute_with_referral_distribution(self, session_paths: List[str],
+                                                       bots_scenarios: List[Dict],
+                                                       progress_callback=None,
+                                                       cancel_flag: Optional[Dict] = None) -> Dict[str, any]:
+        """
+        اجرای دسته‌جمعی با تقسیم‌بندی رفرال
+        
+        Args:
+            session_paths: لیست مسیر فایل‌های سشن
+            bots_scenarios: لیست ربات‌ها و سناریوهایشان
+            progress_callback: تابع callback برای نمایش پیشرفت
+            cancel_flag: دیکشنری برای بررسی لغو/مکث عملیات
+            
+        Returns:
+            دیکشنری حاوی نتایج و آمار رفرال
+        """
+        # ایجاد دیکشنری آمار رفرال
+        referral_stats = {}
+        has_referral_distribution = False
+        
+        for bot_data in bots_scenarios:
+            bot_username = bot_data['bot_username']
+            referral_codes = bot_data.get('referral_codes')
+            
+            if referral_codes:
+                has_referral_distribution = True
+                for ref in referral_codes:
+                    ref_key = f"{bot_username}_{ref['code']}"
+                    referral_stats[ref_key] = {
+                        'bot': bot_username,
+                        'code': ref['code'],
+                        'target_count': ref['target_count'],
+                        'success_count': 0,
+                        'failed_count': 0,
+                        'accounts_used': []
+                    }
+        
+        results = {
+            'success': 0,
+            'failed': 0,
+            'cancelled': 0,
+            'details': [],
+            'referral_stats': referral_stats if has_referral_distribution else None
+        }
+        
+        total = len(session_paths)
+        account_index = 0
+        
+        # اگر رفرال چندگانه داریم، تا زمانی که همه رفرال‌ها کامل نشدن ادامه بده
+        while account_index < total:
+            # بررسی لغو عملیات
+            if cancel_flag and cancel_flag.get('cancelled'):
+                logger.info(f"عملیات توسط کاربر لغو شد")
+                results['cancelled'] = total - account_index
+                break
+            
+            # بررسی مکث
+            while cancel_flag and cancel_flag.get('paused'):
+                logger.info(f"عملیات در حالت مکث است...")
+                await asyncio.sleep(1)
+                
+                if cancel_flag.get('cancelled'):
+                    logger.info(f"عملیات در حین مکث لغو شد")
+                    results['cancelled'] = total - account_index
+                    return results
+            
+            # اگر رفرال چندگانه داریم، بررسی کن که آیا همه کامل شدند
+            if has_referral_distribution:
+                all_completed = all(
+                    stats['success_count'] >= stats['target_count']
+                    for stats in referral_stats.values()
+                )
+                if all_completed:
+                    logger.info("همه رفرال‌ها به هدف رسیدند")
+                    break
+            
+            session_path = session_paths[account_index]
+            
+            # محاسبه تاخیر تصادفی
+            delay = Config.DELAY_BETWEEN_ACTIONS + random.randint(0, Config.DELAY_RANDOM_RANGE)
+            
+            # اگر callback داریم، پیشرفت رو نمایش بدیم
+            if progress_callback:
+                await progress_callback(account_index + 1, total, f"در حال اجرای اکانت {account_index + 1}/{total}...")
+            
+            logger.info(f"اجرای سناریو برای اکانت {account_index + 1}/{total}")
+            
+            result = await self.execute_multi_bot_scenario(
+                session_path, bots_scenarios, referral_stats if has_referral_distribution else None
+            )
+            
+            if result['success']:
+                results['success'] += 1
+            else:
+                results['failed'] += 1
+            
+            results['details'].append({
+                'session': Path(session_path).name,
+                'result': result
+            })
+            
+            account_index += 1
+            
+            # تاخیر بین عملیات‌ها
+            if account_index < total:
+                logger.info(f"صبر {delay} ثانیه قبل از عملیات بعدی...")
+                await asyncio.sleep(delay)
+        
+        return results
     
     async def bulk_execute_multi_bot_scenario(self, session_paths: List[str],
                                               bots_scenarios: List[Dict],

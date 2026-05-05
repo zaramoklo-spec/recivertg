@@ -2694,6 +2694,27 @@ class BotHandler:
                         )
                         return
                     
+                    # بررسی و ساخت referral_stats اگر رفرال چندگانه داریم
+                    referral_stats = {}
+                    has_referral_distribution = False
+                    
+                    for bot_data in bots_scenarios:
+                        bot_username = bot_data['bot_username']
+                        referral_codes = bot_data.get('referral_codes')
+                        
+                        if referral_codes:
+                            has_referral_distribution = True
+                            for ref in referral_codes:
+                                ref_key = f"{bot_username}_{ref['code']}"
+                                referral_stats[ref_key] = {
+                                    'bot': bot_username,
+                                    'code': ref['code'],
+                                    'target_count': ref['target_count'],
+                                    'success_count': 0,
+                                    'failed_count': 0,
+                                    'accounts_used': []
+                                }
+                    
                     # دریافت اکانت‌های کاربر
                     accounts = await self.db.get_accounts(user_id)
                     active_accounts = [acc for acc in accounts if acc.status == 'active' and acc.session_path]
@@ -2711,7 +2732,15 @@ class BotHandler:
                     for bot_data in bots_scenarios:
                         bot_username = bot_data['bot_username']
                         scenario = bot_data['scenario']
+                        referral_codes = bot_data.get('referral_codes')
+                        
                         scenario_summary += f"@{bot_username} ({len(scenario)} مرحله)\n"
+                        
+                        # اگر رفرال چندگانه داره، نمایش بده
+                        if referral_codes:
+                            scenario_summary += f"  🔗 رفرال‌ها:\n"
+                            for ref in referral_codes:
+                                scenario_summary += f"    • {ref['code']}: {ref['target_count']} موفق\n"
                     
                     # ذخیره اطلاعات
                     state['multi_bot'] = True
@@ -2719,6 +2748,8 @@ class BotHandler:
                     state['scenario_summary'] = scenario_summary
                     state['active_accounts'] = active_accounts
                     state['scenario_text'] = scenario_text  # ذخیره متن کامل سناریو
+                    state['has_referral_distribution'] = has_referral_distribution
+                    state['referral_stats'] = referral_stats if has_referral_distribution else None
                     state['step'] = 'scenario_count'
                     
                     # بررسی پیشرفت قبلی
@@ -3108,9 +3139,22 @@ class BotHandler:
                                 try:
                                     if is_multi_bot:
                                         bots_scenarios = state['bots_scenarios']
-                                        result = await self.bot_automation.execute_multi_bot_scenario(
-                                            session_path, bots_scenarios
+                                        
+                                        # بررسی اینکه آیا رفرال چندگانه داریم
+                                        has_referral_dist = any(
+                                            bot.get('referral_codes') for bot in bots_scenarios
                                         )
+                                        
+                                        if has_referral_dist:
+                                            # استفاده از referral_stats از state
+                                            referral_stats = state.get('referral_stats')
+                                            result = await self.bot_automation.execute_multi_bot_scenario(
+                                                session_path, bots_scenarios, referral_stats
+                                            )
+                                        else:
+                                            result = await self.bot_automation.execute_multi_bot_scenario(
+                                                session_path, bots_scenarios
+                                            )
                                     else:
                                         bot_username = state['bot_username']
                                         scenario = state['scenario']
@@ -3280,7 +3324,56 @@ class BotHandler:
                         if results.get('cancelled', 0) > 0:
                             report_lines.append(f"🛑 لغو شده: {results['cancelled']}")
                         report_lines.append("")
-                        report_lines.append("=" * 60)
+                        
+                        # اگر رفرال چندگانه داریم، آمار رو نمایش بده
+                        if state.get('has_referral_distribution') and state.get('referral_stats'):
+                            report_lines.append("=" * 60)
+                            report_lines.append("📊 آمار رفرال‌ها")
+                            report_lines.append("=" * 60)
+                            report_lines.append("")
+                            
+                            referral_stats = state['referral_stats']
+                            
+                            # گروه‌بندی بر اساس ربات
+                            bots_refs = {}
+                            for ref_key, stats in referral_stats.items():
+                                bot = stats['bot']
+                                if bot not in bots_refs:
+                                    bots_refs[bot] = []
+                                bots_refs[bot].append(stats)
+                            
+                            for bot, refs in bots_refs.items():
+                                report_lines.append(f"🤖 ربات: @{bot}")
+                                report_lines.append("-" * 60)
+                                
+                                for ref_stats in refs:
+                                    code = ref_stats['code']
+                                    target = ref_stats['target_count']
+                                    success = ref_stats['success_count']
+                                    failed = ref_stats['failed_count']
+                                    used = len(ref_stats['accounts_used'])
+                                    
+                                    status = "✅ کامل" if success >= target else f"⏳ {success}/{target}"
+                                    
+                                    report_lines.append(f"")
+                                    report_lines.append(f"  🔗 کد رفرال: {code}")
+                                    report_lines.append(f"     وضعیت: {status}")
+                                    report_lines.append(f"     ✅ موفق: {success}/{target}")
+                                    report_lines.append(f"     ❌ ناموفق: {failed}")
+                                    report_lines.append(f"     📱 اکانت استفاده شده: {used}")
+                                    
+                                    if ref_stats['accounts_used']:
+                                        report_lines.append(f"     📋 اکانت‌ها:")
+                                        for acc in ref_stats['accounts_used'][:5]:
+                                            report_lines.append(f"        • {acc}")
+                                        if len(ref_stats['accounts_used']) > 5:
+                                            report_lines.append(f"        ... و {len(ref_stats['accounts_used']) - 5} اکانت دیگر")
+                                
+                                report_lines.append("")
+                            
+                            report_lines.append("=" * 60)
+                        else:
+                            report_lines.append("=" * 60)
                         
                         # ساخت فایل با نام یونیک (شامل user_id و timestamp)
                         report_content = "\n".join(report_lines)
@@ -3289,6 +3382,38 @@ class BotHandler:
                         report_file.name = f"scenario_report_user{user_id}_{timestamp}.txt"
                         
                         # نمایش خلاصه در پیام
+                        # اگر رفرال چندگانه داریم، آمار رو در پیام هم نمایش بده
+                        if state.get('has_referral_distribution') and state.get('referral_stats'):
+                            results_text += "\n\n📊 **آمار رفرال:**\n"
+                            results_text += "━━━━━━━━━━━━━━━━━━━━\n"
+                            
+                            referral_stats = state['referral_stats']
+                            
+                            # گروه‌بندی بر اساس ربات
+                            bots_refs = {}
+                            for ref_key, stats in referral_stats.items():
+                                bot = stats['bot']
+                                if bot not in bots_refs:
+                                    bots_refs[bot] = []
+                                bots_refs[bot].append(stats)
+                            
+                            for bot, refs in bots_refs.items():
+                                results_text += f"\n🤖 @{bot}\n"
+                                for ref_stats in refs:
+                                    code = ref_stats['code']
+                                    target = ref_stats['target_count']
+                                    success = ref_stats['success_count']
+                                    failed = ref_stats['failed_count']
+                                    used = len(ref_stats['accounts_used'])
+                                    
+                                    status_emoji = "✅" if success >= target else "⏳"
+                                    results_text += f"  {status_emoji} {code}: {success}/{target} موفق"
+                                    if failed > 0:
+                                        results_text += f" ({failed} ناموفق)"
+                                    results_text += f" | {used} اکانت\n"
+                            
+                            results_text += "\n"
+                        
                         for i, detail in enumerate(results['details'][:5], 1):  # نمایش 5 مورد اول
                             phone_short = selected_accounts[i-1].phone[-4:] if selected_accounts[i-1].phone else "****"
                             result = detail['result']
